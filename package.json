@@ -1,0 +1,26 @@
+{
+  "name": "eien",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.3.8",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "check": "bun run typecheck",
+    "up": "docker compose up -d",
+    "down": "docker compose down",
+    "ps": "docker compose ps",
+    "logs": "docker compose logs -f --tail=100",
+    "temporal:cli": "docker compose exec temporal-admin-tools temporal"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.0",
+    "typescript": "^5.9.0"
+  }
+}
