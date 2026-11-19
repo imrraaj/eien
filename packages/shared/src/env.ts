@@ -36,7 +36,6 @@ const telegramUserIds = z
 export const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
-  LOG_DIR: textWithDefault("logs"),
 
   TEMPORAL_ADDRESS: textWithDefault("localhost:7233"),
   TEMPORAL_NAMESPACE: textWithDefault("default"),
