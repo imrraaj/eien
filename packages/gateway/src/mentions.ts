@@ -63,11 +63,6 @@ function commandTargetsBot(text: string, botUsername: string): boolean {
   return target?.toLowerCase() === botUsername.toLowerCase();
 }
 
-/** Bare `/ask ...` is an explicit request to this bot. */
-function bareAsk(text: string): boolean {
-  return /^\/ask(?:\s|$)/i.test(text);
-}
-
 /**
  * In private chats always respond. In groups, respond only when the bot is
  * mentioned, when replying to one of its messages, or for /cmd@botusername.
@@ -80,8 +75,7 @@ export function groupGate(input: GroupGateInput): GroupGateResult {
   const addressed =
     messageMentionsBot(input) ||
     input.replyToBot ||
-    commandTargetsBot(input.text, input.botUsername) ||
-    bareAsk(input.text);
+    commandTargetsBot(input.text, input.botUsername);
 
   return {
     respond: addressed,
