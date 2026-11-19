@@ -2,6 +2,7 @@ import { validateToolCall, type Tool, type ToolCall } from "@earendil-works/pi-a
 import {
   editText,
   readText,
+  resolveInRoot,
   sbxExec,
   writeText,
   type SandboxConfig,
@@ -10,11 +11,19 @@ import { runWebTool, webTools, type WebOptions } from "./web.ts";
 
 export { webTools, type WebOptions } from "./web.ts";
 
+export interface OutgoingFile {
+  /** Absolute path inside the sandbox workspace. */
+  path: string;
+  caption?: string;
+}
+
 export interface ToolContext {
   sandbox: SandboxConfig;
   /** Absolute workspace root inside the sandbox. */
   root: string;
   web: WebOptions;
+  /** Upload a sandbox file to the chat. Returns a short status line. */
+  sendFile?: (file: OutgoingFile) => Promise<string>;
   signal?: AbortSignal;
 }
 
@@ -88,6 +97,21 @@ export const sandboxTools: Tool[] = [
         new: { type: "string", description: "Replacement text." },
       },
       ["path", "old", "new"],
+    ),
+  },
+  {
+    name: "send_file",
+    description:
+      "Upload a file from the sandbox workspace to the current Telegram chat as a document (any type: image, video, audio, zip, pdf, html...). Use it to deliver results the user asked for. Max 50 MB. The path must be inside the workspace.",
+    parameters: jsonSchema(
+      {
+        path: { type: "string", description: "File path inside the workspace." },
+        caption: {
+          type: "string",
+          description: "Optional short caption (max 1024 characters).",
+        },
+      },
+      ["path"],
     ),
   },
 ];
@@ -175,6 +199,20 @@ export async function runTool(
           text: `replaced 1 occurrence at ${result.path}:${result.line}`,
           isError: false,
         };
+      }
+
+      case "send_file": {
+        if (!context.sendFile) {
+          return { text: "sending files is not available in this chat", isError: true };
+        }
+        const remotePath = resolveInRoot(context.root, str(args, "path"));
+        const rawCaption = args.caption;
+        const caption =
+          typeof rawCaption === "string" && rawCaption.trim()
+            ? rawCaption.trim().slice(0, 1024)
+            : undefined;
+        const status = await context.sendFile({ path: remotePath, caption });
+        return { text: status, isError: false };
       }
 
       default:

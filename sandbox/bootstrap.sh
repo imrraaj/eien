@@ -32,6 +32,17 @@ sbx exec "$SBX_NAME" bash -lc '
   git --version
 '
 
+echo "installing media/document tools in '$SBX_NAME'"
+sbx exec "$SBX_NAME" bash -lc '
+  set -euo pipefail
+  sudo apt-get update -qq
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+    ffmpeg imagemagick pandoc poppler-utils file
+  ffmpeg -version | head -1
+  pandoc --version | head -1
+  magick -version | head -1
+'
+
 cat <<EOF
 
 Sandbox ready: $SBX_NAME

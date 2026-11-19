@@ -16,6 +16,7 @@ Temporal orchestration is intentionally deferred.
 - [x] Works in groups when mentioned (`@botname ...`) or replied to
 - [x] Sandbox coding tools (`bash`, `read`, `write`, `edit`), path-confined to `/work`
 - [x] Web tools (`web_search`, `web_fetch`) via Exa's keyless hosted MCP
+- [x] File exchange: receive Telegram attachments into `/work/uploads`, send results with `send_file`
 - [ ] Durable workflows, child workers, schedules (next: Temporal)
 - [ ] Postgres transcripts and memory
 
@@ -67,8 +68,15 @@ the bot in BotFather (`/setprivacy`).
 | Tool | Runs where | Purpose |
 |---|---|---|
 | `bash`, `read`, `write`, `edit` | sandbox VM | Coding work in `/work` |
+| `send_file` | host + sandbox | Upload a workspace file to the chat (≤50 MB) |
 | `web_search` | host | Current information via Exa MCP (keyless) |
 | `web_fetch` | host | Read a URL as markdown/text |
+
+Incoming photos, videos, audio, voice notes, and documents are downloaded into
+`/work/uploads` and referenced in the prompt, so the agent can transcode or
+convert them. The sandbox ships with `ffmpeg`, ImageMagick, `pandoc`, poppler,
+`python3`, `git`, `curl`, and `jq`; more can be installed with `apt-get`/`pip`.
+Telegram's Bot API caps downloads at 20 MB and bot uploads at 50 MB.
 
 Web results are treated as untrusted data by the system prompt. `EXA_API_KEY` is
 optional and only raises Exa limits.
