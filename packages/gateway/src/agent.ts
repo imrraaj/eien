@@ -1,8 +1,9 @@
-import type { Llm, Message, Tool, ToolCall } from "@eien/llm";
+import type { AssistantMessage, Llm, Message, Tool, ToolCall } from "@eien/llm";
 
 export interface AgentTurnResult {
   messages: Message[];
   text: string;
+  aborted?: boolean;
 }
 
 export interface AgentTurnOptions {
@@ -13,6 +14,7 @@ export interface AgentTurnOptions {
   maxSteps: number;
   timeoutMs: number;
   sessionId: string;
+  signal?: AbortSignal;
   executeTool: (call: ToolCall) => Promise<{ text: string; isError: boolean }>;
   /** Called before a tool runs, for "still working" signals. */
   onToolStart?: (call: ToolCall) => void;
@@ -38,18 +40,35 @@ export function assistantToolCalls(message: Message): ToolCall[] {
 /** Run one user turn: model call → tool calls → repeat until the model answers. */
 export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurnResult> {
   const working = [...options.messages];
+  const stopped = (): AgentTurnResult => ({
+    messages: working,
+    text: assistantText(working.at(-1) as Message),
+    aborted: true,
+  });
 
   for (let step = 0; step < options.maxSteps; step += 1) {
-    const assistant = await options.llm.complete({
-      kind: "main",
-      system: options.system,
-      messages: working,
-      tools: options.tools,
-      signal: AbortSignal.timeout(options.timeoutMs),
-      sessionId: options.sessionId,
-    });
+    if (options.signal?.aborted) return stopped();
+
+    let assistant: AssistantMessage;
+    try {
+      assistant = await options.llm.complete({
+        kind: "main",
+        system: options.system,
+        messages: working,
+        tools: options.tools,
+        signal: options.signal
+          ? AbortSignal.any([options.signal, AbortSignal.timeout(options.timeoutMs)])
+          : AbortSignal.timeout(options.timeoutMs),
+        sessionId: options.sessionId,
+      });
+    } catch (error) {
+      if (options.signal?.aborted) return stopped();
+      throw error;
+    }
 
     working.push(assistant);
+
+    if (options.signal?.aborted) return stopped();
 
     if (assistant.stopReason === "error" || assistant.stopReason === "aborted") {
       throw new Error(
@@ -80,6 +99,8 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
         ms: Date.now() - startedAt,
       });
     }
+
+    if (options.signal?.aborted) return stopped();
   }
 
   const last = working.at(-1);

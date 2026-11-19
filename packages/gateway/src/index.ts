@@ -1,8 +1,9 @@
 import { createLlm, type Message } from "@eien/llm";
 import { agentTools, runAgentTool } from "@eien/tools";
 import { createLogger, loadEnv } from "@eien/shared";
+import { killSandboxWork } from "@eien/sandbox";
 import { Bot, type Context } from "grammy";
-import { runAgentTurn } from "./agent.ts";
+import { assistantText, runAgentTurn } from "./agent.ts";
 import { ackText } from "./ack.ts";
 import {
   describeIngestedFile,
@@ -95,6 +96,8 @@ async function main(): Promise<void> {
     env.SYSTEM_PROMPT ?? defaultSystemPrompt(env.SBX_NAME, env.SBX_WORKDIR);
   const sandbox = { name: env.SBX_NAME };
   const history = new ConversationStore();
+  /** In-flight turn per conversation, so `/stop` can abort it. */
+  const running = new Map<string, AbortController>();
   const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
 
   bot.use(async (ctx, next) => {
@@ -113,8 +116,9 @@ async function main(): Promise<void> {
     ctx: Context,
     conversationId: string,
     messages: Message[],
+    signal: AbortSignal,
     onProgress?: () => void,
-  ): Promise<{ messages: Message[]; text: string }> {
+  ): Promise<{ messages: Message[]; text: string; aborted?: boolean }> {
     return runAgentTurn({
       llm,
       messages,
@@ -123,6 +127,7 @@ async function main(): Promise<void> {
       maxSteps: env.MAX_AGENT_STEPS,
       timeoutMs: env.LLM_TIMEOUT_MS,
       sessionId: `telegram-${conversationId}`,
+      signal,
       onToolStart: () => onProgress?.(),
       executeTool: (call) =>
         runAgentTool(call, {
@@ -130,6 +135,7 @@ async function main(): Promise<void> {
           root: env.SBX_WORKDIR,
           web: { mcpUrl: env.EXA_MCP_URL, exaApiKey: env.EXA_API_KEY },
           sendFile: (file) => sendSandboxFile(ctx, sandbox, file),
+          signal,
         }),
       onToolCall: (call, result) => {
         log.info("tool call", {
@@ -161,6 +167,7 @@ async function main(): Promise<void> {
             "Send me a coding task; I will use bash/read/write/edit in the sandbox.",
             "",
             "/reset — clear this chat's context",
+            "/stop — abort the running task and report progress",
             "/model — show the active model",
             "/status — sandbox and limits",
             "/id — show chat and user IDs",
@@ -172,6 +179,19 @@ async function main(): Promise<void> {
         history.reset(conversationId);
         await ctx.reply("Context cleared.");
         return;
+      case "stop":
+      case "cancel": {
+        const controller = running.get(conversationId);
+        if (!controller) {
+          await ctx.reply("Nothing is running right now.");
+          return;
+        }
+        await ctx.reply("Stopping…");
+        controller.abort();
+        const killed = await killSandboxWork(sandbox, env.SBX_WORKDIR).catch(() => 0);
+        log.info("turn stopped", { conversationId, killed });
+        return;
+      }
       case "model":
         await ctx.reply(`Model: ${modelId}`);
         return;
@@ -196,6 +216,25 @@ async function main(): Promise<void> {
         return;
       default:
         await ctx.reply("Unknown command. Try /help.");
+    }
+  }
+
+  async function summarizeStopped(
+    conversationId: string,
+    messages: Message[],
+  ): Promise<string> {
+    try {
+      const reply = await llm.complete({
+        kind: "main",
+        system: `${systemPrompt}\n\nThe user stopped this run. Without calling tools, report the current state: what was completed, what remains, and where any output files are. Be brief.`,
+        messages,
+        tools: [],
+        signal: AbortSignal.timeout(env.LLM_TIMEOUT_MS),
+        sessionId: `telegram-${conversationId}`,
+      });
+      return assistantText(reply);
+    } catch {
+      return "Stopped. Completed work is still in the sandbox.";
     }
   }
 
@@ -236,10 +275,32 @@ async function main(): Promise<void> {
       void ctx.reply(ackText(prompt)).catch(() => undefined);
     };
     const ackTimer = setTimeout(() => acknowledge(true), ACK_DELAY_MS);
+    const controller = new AbortController();
+    running.set(conversationId, controller);
 
     try {
-      const result = await runTurn(ctx, conversationId, messages, acknowledge);
+      const result = await runTurn(
+        ctx,
+        conversationId,
+        messages,
+        controller.signal,
+        acknowledge,
+      );
       history.set(conversationId, result.messages);
+
+      if (result.aborted) {
+        const summary = await summarizeStopped(conversationId, result.messages);
+        const text = [result.text, summary].filter(Boolean).join("\n\n");
+        await replyInChunks(ctx, text || "Stopped.");
+        log.info("turn aborted", {
+          telegramUserId,
+          chatId: conversationId,
+          ms: Date.now() - startedAt,
+          messageCount: result.messages.length,
+        });
+        return;
+      }
+
       await replyInChunks(ctx, result.text || "(the model returned no text)");
       log.info("turn complete", {
         telegramUserId,
@@ -261,6 +322,7 @@ async function main(): Promise<void> {
         .catch(() => undefined);
     } finally {
       clearTimeout(ackTimer);
+      if (running.get(conversationId) === controller) running.delete(conversationId);
       stopTyping();
     }
   }

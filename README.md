@@ -45,8 +45,12 @@ MODEL_MAIN=...                        # or LLM_MODEL
 Any OpenAI-compatible endpoint works (`LLM_BASE_URL`). OpenRouter attribution
 headers are only added for openrouter.ai.
 
-Commands: `/reset`, `/model`, `/status`, `/help`. The bot uses long polling, so
-no inbound ports are needed.
+Commands: `/reset`, `/stop`, `/model`, `/status`, `/help`. The bot uses long
+polling, so no inbound ports are needed.
+
+`/stop` aborts the running turn, kills processes started under `/work`, and asks
+the model for a short no-tools report of what was completed and where the output
+is. Completed files are left in place.
 
 ### Users
 

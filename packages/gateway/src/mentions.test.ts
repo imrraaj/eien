@@ -60,6 +60,13 @@ describe("groupGate", () => {
     });
   });
 
+  test("responds to bare commands in groups", () => {
+    expect(groupGate({ ...base, isGroup: true, text: "/stop" })).toEqual({
+      respond: true,
+      text: "/stop",
+    });
+  });
+
   test("ignores unaddressed group messages and other bots", () => {
     expect(groupGate({ ...base, isGroup: true, text: "hello everyone" }).respond).toBe(false);
     expect(groupGate({ ...base, isGroup: true, text: "@otherbot hi" }).respond).toBe(false);

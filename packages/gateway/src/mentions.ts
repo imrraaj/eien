@@ -63,6 +63,11 @@ function commandTargetsBot(text: string, botUsername: string): boolean {
   return target?.toLowerCase() === botUsername.toLowerCase();
 }
 
+/** Telegram only delivers group commands addressed to a bot; treat them as ours. */
+function bareCommand(text: string): boolean {
+  return /^\/\w+(?:\s|$)/.test(text);
+}
+
 /**
  * In private chats always respond. In groups, respond only when the bot is
  * mentioned, when replying to one of its messages, or for /cmd@botusername.
@@ -75,7 +80,8 @@ export function groupGate(input: GroupGateInput): GroupGateResult {
   const addressed =
     messageMentionsBot(input) ||
     input.replyToBot ||
-    commandTargetsBot(input.text, input.botUsername);
+    commandTargetsBot(input.text, input.botUsername) ||
+    bareCommand(input.text);
 
   return {
     respond: addressed,

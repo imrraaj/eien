@@ -7,6 +7,7 @@ export {
   type RemoteFileInfo,
 } from "./copy.ts";
 export { resolveInRoot } from "./paths.ts";
+export { killSandboxWork, type KillOptions } from "./kill.ts";
 export {
   editText,
   readText,
