@@ -6,11 +6,15 @@ import {
   writeText,
   type SandboxConfig,
 } from "@eien/sandbox";
+import { runWebTool, webTools, type WebOptions } from "./web.ts";
+
+export { webTools, type WebOptions } from "./web.ts";
 
 export interface ToolContext {
   sandbox: SandboxConfig;
   /** Absolute workspace root inside the sandbox. */
   root: string;
+  web: WebOptions;
   signal?: AbortSignal;
 }
 
@@ -182,4 +186,18 @@ export async function runTool(
       isError: true,
     };
   }
+}
+
+/** Every tool exposed to the agent: sandbox coding tools plus web tools. */
+export const agentTools: Tool[] = [...sandboxTools, ...webTools];
+
+/** Route a tool call to the sandbox or the host-side web client. */
+export async function runAgentTool(
+  call: ToolCall,
+  context: ToolContext,
+): Promise<ToolRunResult> {
+  if (call.name === "web_search" || call.name === "web_fetch") {
+    return runWebTool(call, context.web, context.signal);
+  }
+  return runTool(call, context);
 }

@@ -80,7 +80,28 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
   }
 
   const last = working.at(-1);
-  const text = last ? assistantText(last) : "";
+  const lastText = last ? assistantText(last) : "";
   const notice = `(stopped after ${options.maxSteps} tool steps; send another message to continue)`;
-  return { messages: working, text: text ? `${text}\n\n${notice}` : notice };
+
+  // Ask for a summary without tools so the turn ends with useful information.
+  try {
+    const summary = await options.llm.complete({
+      kind: "main",
+      system: `${options.system}\n\nYou have reached the ${options.maxSteps}-step tool limit. Do not call tools. Summarize what you learned, what failed, and the single next action the user should take.`,
+      messages: working,
+      tools: [],
+      signal: AbortSignal.timeout(options.timeoutMs),
+      sessionId: options.sessionId,
+    });
+    working.push(summary);
+
+    if (summary.stopReason !== "error" && summary.stopReason !== "aborted") {
+      const text = assistantText(summary);
+      if (text) return { messages: working, text };
+    }
+  } catch {
+    // Fall through to the static notice.
+  }
+
+  return { messages: working, text: lastText ? `${lastText}\n\n${notice}` : notice };
 }

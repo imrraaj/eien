@@ -13,7 +13,9 @@ Temporal orchestration is intentionally deferred.
 - [x] Sandbox `agent-1` with scoped egress, git identity, `/work`
 - [x] pi-ai client for any OpenAI-compatible endpoint
 - [x] Telegram bot with allowlist, per-user history, `/reset`, `/model`, `/status`
+- [x] Works in groups when mentioned (`@botname ...`) or replied to
 - [x] Sandbox coding tools (`bash`, `read`, `write`, `edit`), path-confined to `/work`
+- [x] Web tools (`web_search`, `web_fetch`) via Exa's keyless hosted MCP
 - [ ] Durable workflows, child workers, schedules (next: Temporal)
 - [ ] Postgres transcripts and memory
 
@@ -44,6 +46,33 @@ headers are only added for openrouter.ai.
 Commands: `/reset`, `/model`, `/status`, `/help`. The bot uses long polling, so
 no inbound ports are needed.
 
+### Groups
+
+Add the bot to a group and address it directly:
+
+```
+@yourbot how much is bitcoin right now?
+```
+
+It also answers when you reply to one of its messages, and for
+`/status@yourbot`. Other group messages are ignored.
+
+Group context is shared by the chat, while the user allowlist still applies.
+Telegram's default privacy mode already delivers mentions/commands; to let the
+bot see all group messages (for replies and context), disable privacy mode for
+the bot in BotFather (`/setprivacy`).
+
+### Tools
+
+| Tool | Runs where | Purpose |
+|---|---|---|
+| `bash`, `read`, `write`, `edit` | sandbox VM | Coding work in `/work` |
+| `web_search` | host | Current information via Exa MCP (keyless) |
+| `web_fetch` | host | Read a URL as markdown/text |
+
+Web results are treated as untrusted data by the system prompt. `EXA_API_KEY` is
+optional and only raises Exa limits.
+
 ## Sandbox
 
 ```bash
@@ -51,10 +80,13 @@ no inbound ports are needed.
 sbx exec agent-1 -- bash -lc 'pwd'
 ```
 
-Creates `agent-1`, applies a scoped network allowlist (git, npm/pypi, runtime
-hosts), sets git identity and `known_hosts`, and makes `/work` writable by the
-sandbox user. Tools are confined to `/work`; absolute paths elsewhere are
-rejected.
+Creates `agent-1`, applies the egress policy, sets git identity and
+`known_hosts`, and makes `/work` writable by the sandbox user. Tools are confined
+to `/work`; absolute paths elsewhere are rejected.
+
+Egress is **open** by default while testing (`SANDBOX_ALLOW_ALL=1`). Set
+`SANDBOX_ALLOW_ALL=0 ./sandbox/policy.sh` to switch back to the curated allowlist
+(git, registries, runtime hosts, price APIs).
 
 ## Layout
 

@@ -68,7 +68,7 @@ export const envSchema = z.object({
   SBX_WORKDIR: textWithDefault("/work"),
   MAX_AGENT_STEPS: z.preprocess(
     emptyToUndefined,
-    z.coerce.number().int().min(1).max(50).default(12),
+    z.coerce.number().int().min(1).max(50).default(24),
   ),
   MAX_CONCURRENT_WORKERS: z.preprocess(
     emptyToUndefined,
@@ -77,6 +77,9 @@ export const envSchema = z.object({
 
   GOOGLE_CLI_BIN: optionalNonEmpty,
   GOOGLE_CLI_CONFIG_DIR: optionalNonEmpty,
+
+  EXA_MCP_URL: textWithDefault("https://mcp.exa.ai/mcp"),
+  EXA_API_KEY: optionalNonEmpty,
 });
 
 export type Env = z.infer<typeof envSchema>;

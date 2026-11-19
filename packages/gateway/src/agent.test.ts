@@ -105,11 +105,11 @@ describe("runAgentTurn", () => {
     ).rejects.toThrow("stop reason");
   });
 
-  test("stops at the step limit", async () => {
+  test("summarizes progress at the step limit", async () => {
     const { llm } = fakeLlm([
       assistant([toolCall]),
       assistant([toolCall]),
-      assistant([toolCall]),
+      assistant([{ type: "text", text: "ran out of steps; next: check the API" }]),
     ]);
     const result = await runAgentTurn({
       llm,
@@ -121,6 +121,6 @@ describe("runAgentTurn", () => {
       sessionId: "s",
       executeTool: async () => ({ text: "ok", isError: false }),
     });
-    expect(result.text).toContain("stopped after 2 tool steps");
+    expect(result.text).toContain("ran out of steps");
   });
 });
