@@ -68,7 +68,7 @@ export const envSchema = z.object({
   SBX_WORKDIR: textWithDefault("/work"),
   MAX_AGENT_STEPS: z.preprocess(
     emptyToUndefined,
-    z.coerce.number().int().min(1).max(50).default(24),
+    z.coerce.number().int().min(1).max(100).default(100),
   ),
   MAX_CONCURRENT_WORKERS: z.preprocess(
     emptyToUndefined,

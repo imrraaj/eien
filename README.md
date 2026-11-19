@@ -65,6 +65,15 @@ History is **in memory only**: the last 40 messages (or ~48 K characters) per
 conversation, lost on restart, cleared by `/reset`. Postgres-backed history is
 the planned next step.
 
+### Long tasks
+
+One message may use up to `MAX_AGENT_STEPS` model steps (default and hard cap
+100, each step may batch several tool calls). Single bash commands may run up to
+15 minutes. At the limit the bot asks the model for a no-tools summary rather
+than stopping silently; send any follow-up message to continue. Turns are still
+synchronous, so a very long task keeps one "typing" indicator going until it
+finishes or the process restarts.
+
 ### Groups
 
 Add the bot to a group and address it directly:

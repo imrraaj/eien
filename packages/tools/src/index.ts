@@ -49,7 +49,7 @@ export const sandboxTools: Tool[] = [
         command: { type: "string", description: "Bash command to execute." },
         timeoutSec: {
           type: "number",
-          description: "Timeout in seconds (1-300, default 120).",
+          description: "Timeout in seconds (1-900, default 120).",
         },
       },
       ["command"],
