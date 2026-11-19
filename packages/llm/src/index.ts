@@ -87,11 +87,8 @@ export interface Llm {
   modelId(kind?: ModelKind): string;
 }
 
-/**
- * pi-ai backed client for any OpenAI-compatible endpoint.
- * Each call is one model turn; the caller owns the tool loop and durability.
- */
-export function createLlm(env: Env): Llm {
+/** Build the pi-ai model registry for the configured OpenAI-compatible endpoint. */
+export function createModelsRegistry(env: Env) {
   const settings = resolveLlmSettings(env);
 
   const models = createModels();
@@ -131,6 +128,16 @@ export function createLlm(env: Env): Llm {
       api: openAICompletionsApi(),
     }),
   );
+
+  return models;
+}
+
+/**
+ * pi-ai backed client for any OpenAI-compatible endpoint.
+ * Each call is one model turn; the caller owns the tool loop and durability.
+ */
+export function createLlm(env: Env): Llm {
+  const models = createModelsRegistry(env);
 
   const getModel = (kind: ModelKind): Model<"openai-completions"> => {
     const id = resolveModelId(env, kind);
