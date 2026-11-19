@@ -17,6 +17,7 @@ Temporal orchestration is intentionally deferred.
 - [x] Sandbox coding tools (`bash`, `read`, `write`, `edit`), path-confined to `/work`
 - [x] Web tools (`web_search`, `web_fetch`) via Exa's keyless hosted MCP
 - [x] File exchange: receive Telegram attachments into `/work/uploads`, send results with `send_file`
+- [x] Markdown replies rendered as Telegram HTML (bold, code, links, quotes, tables)
 - [ ] Durable workflows, child workers, schedules (next: Temporal)
 - [ ] Postgres transcripts and memory
 

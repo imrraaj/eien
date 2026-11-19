@@ -10,6 +10,11 @@ import {
 } from "./files.ts";
 import { ConversationStore } from "./history.ts";
 import { groupGate } from "./mentions.ts";
+import {
+  htmlToPlainText,
+  TELEGRAM_CHUNK_LIMIT,
+  toTelegramChunks,
+} from "./markdown.ts";
 import { splitMessage } from "./text.ts";
 
 const MAX_INPUT_CHARS = 8_000;
@@ -49,8 +54,15 @@ function startTyping(ctx: Context): () => void {
 }
 
 async function replyInChunks(ctx: Context, text: string): Promise<void> {
-  for (const chunk of splitMessage(text)) {
-    await ctx.reply(chunk);
+  for (const chunk of toTelegramChunks(text, TELEGRAM_CHUNK_LIMIT)) {
+    try {
+      await ctx.reply(chunk, { parse_mode: "HTML" });
+    } catch {
+      // Telegram rejected the markup: resend as readable plain text.
+      for (const plain of splitMessage(htmlToPlainText(chunk))) {
+        await ctx.reply(plain);
+      }
+    }
   }
 }
 
