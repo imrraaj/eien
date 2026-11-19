@@ -18,6 +18,7 @@ Temporal orchestration is intentionally deferred.
 - [x] Web tools (`web_search`, `web_fetch`) via Exa's keyless hosted MCP
 - [x] File exchange: receive Telegram attachments into `/work/uploads`, send results with `send_file`
 - [x] Markdown replies rendered as Telegram HTML (bold, code, links, quotes, tables)
+- [x] `spawn_agent` workers keep noisy work out of the main context
 - [ ] Durable workflows, child workers, schedules (next: Temporal)
 - [ ] Postgres transcripts and memory
 
@@ -106,6 +107,15 @@ the bot in BotFather (`/setprivacy`).
 | `send_file` | host + sandbox | Upload a workspace file to the chat (≤50 MB) |
 | `web_search` | host | Current information via Exa MCP (keyless) |
 | `web_fetch` | host | Read a URL as markdown/text |
+| `spawn_agent` | host + sandbox | Delegate a self-contained task to a worker; only its report returns |
+
+### Subagents
+
+`spawn_agent` runs a nested turn with the same workspace and tools (minus
+`spawn_agent` itself) and returns only a short final report. That keeps noisy
+exploration, big builds, and mass file work out of the main context. Workers run
+up to `MAX_CONCURRENT_WORKERS` at once (default 3), share the sandbox, and are
+aborted by `/stop`. Give parallel workers separate directories.
 
 Incoming photos, videos, audio, voice notes, and documents are downloaded into
 `/work/uploads` and referenced in the prompt, so the agent can transcode or

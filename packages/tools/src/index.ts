@@ -8,8 +8,10 @@ import {
   type SandboxConfig,
 } from "@eien/sandbox";
 import { runWebTool, webTools, type WebOptions } from "./web.ts";
+import { runSpawnTool, spawnTool, type SpawnInput } from "./spawn.ts";
 
 export { webTools, type WebOptions } from "./web.ts";
+export { spawnTool, type SpawnInput } from "./spawn.ts";
 
 export interface OutgoingFile {
   /** Absolute path inside the sandbox workspace. */
@@ -24,6 +26,8 @@ export interface ToolContext {
   web: WebOptions;
   /** Upload a sandbox file to the chat. Returns a short status line. */
   sendFile?: (file: OutgoingFile) => Promise<string>;
+  /** Run a nested worker turn. Returns its final report. */
+  spawnAgent?: (input: SpawnInput) => Promise<string>;
   signal?: AbortSignal;
 }
 
@@ -227,15 +231,18 @@ export async function runTool(
 }
 
 /** Every tool exposed to the agent: sandbox coding tools plus web tools. */
-export const agentTools: Tool[] = [...sandboxTools, ...webTools];
+export const agentTools: Tool[] = [...sandboxTools, ...webTools, spawnTool];
 
-/** Route a tool call to the sandbox or the host-side web client. */
+/** Route a tool call to the sandbox, the web client, or a worker agent. */
 export async function runAgentTool(
   call: ToolCall,
   context: ToolContext,
 ): Promise<ToolRunResult> {
   if (call.name === "web_search" || call.name === "web_fetch") {
     return runWebTool(call, context.web, context.signal);
+  }
+  if (call.name === "spawn_agent") {
+    return runSpawnTool(call, context);
   }
   return runTool(call, context);
 }
