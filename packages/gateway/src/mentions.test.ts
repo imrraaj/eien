@@ -60,6 +60,13 @@ describe("groupGate", () => {
     });
   });
 
+  test("responds to bare /ask as an explicit request", () => {
+    expect(groupGate({ ...base, isGroup: true, text: "/ask hi" })).toEqual({
+      respond: true,
+      text: "/ask hi",
+    });
+  });
+
   test("ignores unaddressed group messages and other bots", () => {
     expect(groupGate({ ...base, isGroup: true, text: "hello everyone" }).respond).toBe(false);
     expect(groupGate({ ...base, isGroup: true, text: "@otherbot hi" }).respond).toBe(false);

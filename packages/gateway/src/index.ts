@@ -133,6 +133,7 @@ async function main(): Promise<void> {
           [
             "Send me a coding task; I will use bash/read/write/edit in the sandbox.",
             "",
+            "/ask <question> — ask without a mention (works in groups)",
             "/reset — clear this chat's context",
             "/model — show the active model",
             "/status — sandbox and limits",
@@ -207,21 +208,30 @@ async function main(): Promise<void> {
     // Private chat id == user id; groups share one conversation.
     const conversationId = String(ctx.chat.id);
 
-    if (text.startsWith("/")) {
+    // /ask works even when Telegram privacy mode hides plain mentions.
+    const ask = text.match(/^\/ask(?:@\w+)?(?:\s+([\s\S]*))?$/i);
+    const prompt = ask ? (ask[1] ?? "").trim() : text;
+
+    if (!ask && text.startsWith("/")) {
       await handleCommand(ctx, text, conversationId);
       return;
     }
 
-    if (text.length > MAX_INPUT_CHARS) {
+    if (!prompt) {
+      await ctx.reply("Usage: /ask <question>");
+      return;
+    }
+
+    if (prompt.length > MAX_INPUT_CHARS) {
       await ctx.reply(
-        `Message too long (${text.length} chars). The limit is ${MAX_INPUT_CHARS}.`,
+        `Message too long (${prompt.length} chars). The limit is ${MAX_INPUT_CHARS}.`,
       );
       return;
     }
 
     const userMessage: Message = {
       role: "user",
-      content: text,
+      content: prompt,
       timestamp: Date.now(),
     };
     const messages = [...history.get(conversationId), userMessage];
@@ -288,7 +298,7 @@ async function main(): Promise<void> {
       });
       if (!info.can_read_all_group_messages) {
         log.warn(
-          "Telegram group privacy is ON: the bot only receives mentions, commands, and replies. Disable it in BotFather (/setprivacy), then remove and re-add the bot to the group.",
+          "Telegram group privacy is ON: the bot only receives commands, mentions, and replies. Use /ask <question> in groups, or disable privacy mode in BotFather (/setprivacy) and re-add the bot.",
           { canReadAllGroupMessages: false },
         );
       }
