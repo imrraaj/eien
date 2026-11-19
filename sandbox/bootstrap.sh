@@ -21,7 +21,8 @@ fi
 echo "configuring sandbox '$SBX_NAME'"
 sbx exec "$SBX_NAME" bash -lc '
   set -euo pipefail
-  mkdir -p /work
+  sudo mkdir -p /work
+  sudo chown "$(id -u):$(id -g)" /work
   git config --global user.name "agent-bot"
   git config --global user.email "agent-bot@localhost"
   git config --global init.defaultBranch main

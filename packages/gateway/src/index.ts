@@ -1,49 +1,30 @@
+import { createLlm, type Message } from "@eien/llm";
+import { sandboxTools, runTool } from "@eien/tools";
 import { createLogger, loadEnv } from "@eien/shared";
-import { createLlm, type ModelMessage } from "@eien/llm";
 import { Bot, type Context } from "grammy";
+import { runAgentTurn } from "./agent.ts";
 import { ConversationStore } from "./history.ts";
 import { splitMessage } from "./text.ts";
 
 const MAX_INPUT_CHARS = 8_000;
 
-const DEFAULT_SYSTEM_PROMPT = [
-  "You are eien, a pragmatic engineering assistant chatting over Telegram.",
-  "Be concise. Plain text with occasional code blocks is fine.",
-  "You have no tools in this version: never claim to have run commands,",
-  "read files, or changed anything.",
-].join(" ");
-
-const HELP_TEXT = [
-  "Send me any message and I will ask the configured model.",
-  "",
-  "/reset — clear this chat's context",
-  "/model — show the active model",
-  "/help — this message",
-].join("\n");
-
-function errorStatus(error: unknown): number | undefined {
-  if (typeof error === "object" && error !== null && "statusCode" in error) {
-    const status = (error as { statusCode?: unknown }).statusCode;
-    if (typeof status === "number") return status;
-  }
-  return undefined;
+function defaultSystemPrompt(sandboxName: string, root: string): string {
+  return [
+    "You are eien, a pragmatic coding agent reachable over Telegram.",
+    `You operate inside a sandbox VM named "${sandboxName}". The workspace is ${root}.`,
+    "Use the bash, read, write, and edit tools for all work. They execute inside the sandbox, never on the host.",
+    "The sandbox has network access to git hosting, package registries, and runtime download hosts only.",
+    "Start by inspecting the workspace (pwd, ls) when you are unsure of its state.",
+    "Keep commands non-interactive and bounded; long commands should use timeouts.",
+    "Never claim to have run something you did not run. Report failures and non-zero exit codes honestly.",
+    "Prefer small, verifiable steps and test your changes.",
+    "Reply concisely. Summarize what you did and the important output; do not dump whole files.",
+  ].join("\n");
 }
 
-function userFacingError(error: unknown): string {
-  const status = errorStatus(error);
-  if (status === 429) {
-    return "The model provider is rate limiting this key. Try again in a moment.";
-  }
-  if (status === 401 || status === 403) {
-    return "The model provider rejected the API key. Check LLM_API_KEY in .env.";
-  }
-  if (status !== undefined && status >= 500) {
-    return `The model provider returned an error (HTTP ${status}). Try again.`;
-  }
-  if (error instanceof Error && error.name === "AbortError") {
-    return "The model call timed out. Try a shorter request.";
-  }
-  return "The model call failed. Check the gateway logs for details.";
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
 }
 
 function startTyping(ctx: Context): () => void {
@@ -58,36 +39,6 @@ function startTyping(ctx: Context): () => void {
 async function replyInChunks(ctx: Context, text: string): Promise<void> {
   for (const chunk of splitMessage(text)) {
     await ctx.reply(chunk);
-  }
-}
-
-async function handleCommand(
-  ctx: Context,
-  text: string,
-  history: ConversationStore,
-  userId: string,
-  model: string,
-): Promise<void> {
-  const command = text.split(/\s+/)[0]?.slice(1).split("@")[0] ?? "";
-
-  switch (command) {
-    case "start":
-      await ctx.reply(
-        "Hi. I am eien. Send me a message and I will pass it to the configured model.",
-      );
-      return;
-    case "help":
-      await ctx.reply(HELP_TEXT);
-      return;
-    case "reset":
-      history.reset(userId);
-      await ctx.reply("Context cleared.");
-      return;
-    case "model":
-      await ctx.reply(`Model: ${model}`);
-      return;
-    default:
-      await ctx.reply("Unknown command. Try /help.");
   }
 }
 
@@ -111,11 +62,11 @@ async function main(): Promise<void> {
     );
   }
 
-  // Fails fast on a missing key/model, before Telegram starts polling.
   const llm = createLlm(env);
   const modelId = llm.modelId("main");
-  const systemPrompt = env.SYSTEM_PROMPT ?? DEFAULT_SYSTEM_PROMPT;
-
+  const systemPrompt =
+    env.SYSTEM_PROMPT ?? defaultSystemPrompt(env.SBX_NAME, env.SBX_WORKDIR);
+  const sandbox = { name: env.SBX_NAME };
   const history = new ConversationStore();
   const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
 
@@ -131,13 +82,84 @@ async function main(): Promise<void> {
     await next();
   });
 
+  async function runTurn(
+    userId: string,
+    messages: Message[],
+  ): Promise<{ messages: Message[]; text: string }> {
+    return runAgentTurn({
+      llm,
+      messages,
+      system: systemPrompt,
+      tools: sandboxTools,
+      maxSteps: env.MAX_AGENT_STEPS,
+      timeoutMs: env.LLM_TIMEOUT_MS,
+      sessionId: `telegram-${userId}`,
+      executeTool: (call) => runTool(call, { sandbox, root: env.SBX_WORKDIR }),
+      onToolCall: (call, result) => {
+        log.info("tool call", {
+          telegramUserId: userId,
+          tool: call.name,
+          isError: result.isError,
+          ms: result.ms,
+        });
+      },
+    });
+  }
+
+  async function handleCommand(
+    ctx: Context,
+    text: string,
+    userId: string,
+  ): Promise<void> {
+    const command = text.split(/\s+/)[0]?.slice(1).split("@")[0] ?? "";
+
+    switch (command) {
+      case "start":
+        await ctx.reply(
+          `Hi. I am eien, running inside sandbox "${env.SBX_NAME}". Send me a coding task.`,
+        );
+        return;
+      case "help":
+        await ctx.reply(
+          [
+            "Send me a coding task; I will use bash/read/write/edit in the sandbox.",
+            "",
+            "/reset — clear this chat's context",
+            "/model — show the active model",
+            "/status — sandbox and limits",
+            "/help — this message",
+          ].join("\n"),
+        );
+        return;
+      case "reset":
+        history.reset(userId);
+        await ctx.reply("Context cleared.");
+        return;
+      case "model":
+        await ctx.reply(`Model: ${modelId}`);
+        return;
+      case "status":
+        await ctx.reply(
+          [
+            `sandbox: ${env.SBX_NAME}`,
+            `workdir: ${env.SBX_WORKDIR}`,
+            `model: ${modelId}`,
+            `max steps/turn: ${env.MAX_AGENT_STEPS}`,
+          ].join("\n"),
+        );
+        return;
+      default:
+        await ctx.reply("Unknown command. Try /help.");
+    }
+  }
+
   bot.on("message:text", async (ctx) => {
     const userId = String(ctx.from.id);
     const text = ctx.message.text.trim();
     if (!text) return;
 
     if (text.startsWith("/")) {
-      await handleCommand(ctx, text, history, userId, modelId);
+      await handleCommand(ctx, text, userId);
       return;
     }
 
@@ -148,33 +170,23 @@ async function main(): Promise<void> {
       return;
     }
 
-    const userMessage: ModelMessage = { role: "user", content: text };
+    const userMessage: Message = {
+      role: "user",
+      content: text,
+      timestamp: Date.now(),
+    };
     const messages = [...history.get(userId), userMessage];
-
     const stopTyping = startTyping(ctx);
     const startedAt = Date.now();
 
     try {
-      const result = await llm.chat({
-        kind: "main",
-        system: systemPrompt,
-        messages,
-        abortSignal: AbortSignal.timeout(env.LLM_TIMEOUT_MS),
-      });
-
-      history.set(userId, [
-        ...messages,
-        { role: "assistant", content: result.text },
-      ]);
-
-      await replyInChunks(ctx, result.text || "(the model returned an empty reply)");
-
+      const result = await runTurn(userId, messages);
+      history.set(userId, result.messages);
+      await replyInChunks(ctx, result.text || "(the model returned no text)");
       log.info("turn complete", {
         telegramUserId: userId,
-        model: result.model,
-        finishReason: result.finishReason,
         ms: Date.now() - startedAt,
-        usage: result.usage,
+        messageCount: result.messages.length,
       });
     } catch (error) {
       log.error("turn failed", {
@@ -183,7 +195,9 @@ async function main(): Promise<void> {
         ms: Date.now() - startedAt,
         error,
       });
-      await ctx.reply(userFacingError(error)).catch(() => undefined);
+      await ctx
+        .reply(`Model call failed:\n${errorText(error).slice(0, 800)}`)
+        .catch(() => undefined);
     } finally {
       stopTyping();
     }
@@ -208,6 +222,8 @@ async function main(): Promise<void> {
 
   log.info("gateway starting", {
     model: modelId,
+    sandbox: env.SBX_NAME,
+    workdir: env.SBX_WORKDIR,
     allowedUsers: allowedUsers.size,
   });
 
@@ -218,6 +234,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : error);
+  console.error(errorText(error));
   process.exit(1);
 });

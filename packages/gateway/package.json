@@ -9,7 +9,9 @@
   },
   "dependencies": {
     "@eien/llm": "workspace:*",
+    "@eien/sandbox": "workspace:*",
     "@eien/shared": "workspace:*",
+    "@eien/tools": "workspace:*",
     "grammy": "^1.46.0"
   }
 }

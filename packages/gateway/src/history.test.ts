@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import type { ModelMessage } from "@eien/llm";
+import type { Message } from "@eien/llm";
 import { ConversationStore } from "./history.ts";
 
-const message = (content: string, role: "user" | "assistant" = "user"): ModelMessage => ({
-  role,
+const message = (content: string): Message => ({
+  role: "user",
   content,
+  timestamp: 0,
 });
 
 describe("ConversationStore", () => {
@@ -24,6 +25,22 @@ describe("ConversationStore", () => {
     const store = new ConversationStore({ maxMessages: 1, maxChars: 1 });
     store.set("u1", [message("too long to fit")]);
     expect(store.get("u1")).toHaveLength(1);
+  });
+
+  test("drops orphaned tool results at the start", () => {
+    const store = new ConversationStore({ maxMessages: 10 });
+    store.set("u1", [
+      {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "bash",
+        content: [{ type: "text", text: "output" }],
+        isError: false,
+        timestamp: 0,
+      },
+      message("still here"),
+    ]);
+    expect(store.get("u1")).toEqual([message("still here")]);
   });
 
   test("reset clears a user's history", () => {

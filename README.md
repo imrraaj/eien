@@ -1,102 +1,74 @@
 # eien — always-on coding agent
 
-Self-hosted personal agent: Telegram chat, a main orchestrator agent, and worker
-agents that operate on git repos inside an `sbx` sandbox. All orchestration will
-run on Temporal, so crashes and multi-day approval waits are durable.
+A personal coding agent reachable over Telegram. The current MVP uses **pi-ai**
+(the SDK under Pi) for the model/tool loop and grammY for Telegram. Tools run
+inside the `sbx` sandbox VM: `bash`, `read`, `write`, `edit`.
 
 See [`always-on-agent-plan.md`](./always-on-agent-plan.md) for the full design.
-
-> **Tooling note:** the plan says pnpm; this repo uses **Bun** workspaces
-> (per the machine/agent conventions) — `bun install`, `bun run <script>`.
+Temporal orchestration is intentionally deferred.
 
 ## Status
 
-- [x] **Phase 0** — git + Bun workspace, Docker Compose (Postgres, Temporal, UI,
-      admin tools), separate `agent` DB, Zod env validation, logger.
-- [x] **Chat slice** — Telegram bot (grammY) → any OpenAI-compatible LLM →
-      reply, with allowlist, per-user history, `/reset`, `/model`.
-- [ ] **Phase 1** — move the chat loop onto Temporal (`mainAgent` + `llmStep` +
-      durable `sendTelegram`, transcript in Postgres).
-- [ ] Sandbox created and reachable (`sandbox/bootstrap.sh`).
+- [x] Docker Compose: Postgres, Temporal, Temporal UI, admin tools
+- [x] Sandbox `agent-1` with scoped egress, git identity, `/work`
+- [x] pi-ai client for any OpenAI-compatible endpoint
+- [x] Telegram bot with allowlist, per-user history, `/reset`, `/model`, `/status`
+- [x] Sandbox coding tools (`bash`, `read`, `write`, `edit`), path-confined to `/work`
+- [ ] Durable workflows, child workers, schedules (next: Temporal)
+- [ ] Postgres transcripts and memory
 
 ## Quick start
 
 ```bash
 cp .env.example .env      # fill in LLM + Telegram values
 bun install
-bun run up                # docker compose up -d
+bun run up                # optional for now, Temporal stack
+./sandbox/bootstrap.sh    # create the agent-1 sandbox
+bun run bot
 ```
-
-| Service | URL / address |
-|---|---|
-| Temporal frontend | `localhost:7233` |
-| Temporal UI | http://localhost:8080 |
-| Postgres | `localhost:5432` (`temporal` + `agent` databases) |
-
-Verify infrastructure:
-
-```bash
-docker compose exec temporal-admin-tools temporal operator cluster health
-docker compose exec postgresql psql -U agent -d agent -c 'select 1'
-```
-
-Stop / reset:
-
-```bash
-bun run down              # keep volumes
-docker compose down -v    # wipe Postgres (recreates both DBs on next up)
-```
-
-## Running the bot
 
 Required in `.env`:
 
 ```dotenv
 TELEGRAM_BOT_TOKEN=...
-ALLOWED_TELEGRAM_USER_IDS=123456789   # your numeric Telegram ID, comma-separated
+ALLOWED_TELEGRAM_USER_IDS=123456789   # comma-separated numeric IDs
 
 LLM_BASE_URL=https://openrouter.ai/api/v1
 LLM_API_KEY=...
-MODEL_MAIN=...                        # or LLM_MODEL for a single-model setup
+MODEL_MAIN=...                        # or LLM_MODEL
 ```
 
-```bash
-bun run bot        # foreground
-bun run bot:dev    # reload on file changes
-```
+Any OpenAI-compatible endpoint works (`LLM_BASE_URL`). OpenRouter attribution
+headers are only added for openrouter.ai.
 
-Any OpenAI-compatible endpoint works — point `LLM_BASE_URL` at it. For
-non-OpenRouter endpoints the OpenRouter attribution headers are omitted.
-
-The bot uses long polling (no inbound ports). Unknown Telegram users are
-dropped before their message reaches the model. History is **in memory** in
-this slice; restarting the process clears it (next milestone moves it to
-Postgres/Temporal).
+Commands: `/reset`, `/model`, `/status`, `/help`. The bot uses long polling, so
+no inbound ports are needed.
 
 ## Sandbox
 
 ```bash
 ./sandbox/bootstrap.sh
+sbx exec agent-1 -- bash -lc 'pwd'
 ```
 
-Creates the `agent-1` sandbox, applies a scoped network allowlist (git,
-npm/pypi, runtime hosts), sets git identity and `known_hosts`. Deploy keys are
-added manually per repo — see the script output.
+Creates `agent-1`, applies a scoped network allowlist (git, npm/pypi, runtime
+hosts), sets git identity and `known_hosts`, and makes `/work` writable by the
+sandbox user. Tools are confined to `/work`; absolute paths elsewhere are
+rejected.
 
 ## Layout
 
 ```
-docker-compose.yml            Temporal + Postgres + UI
+docker-compose.yml            Temporal + Postgres + UI (unused by the MVP bot)
 docker/initdb/                first-boot SQL (creates the `agent` DB)
 docker/dynamicconfig/         Temporal dev dynamic config
 packages/shared/              env schema, logger
-packages/llm/                 provider-agnostic OpenAI-compatible client (AI SDK)
-packages/gateway/             grammY bot → LLM → reply
+packages/llm/                 pi-ai client, provider-agnostic
+packages/sandbox/             sbx exec + file helpers, path confinement
+packages/tools/               tool schemas and dispatcher
+packages/gateway/             grammY bot, in-memory history, agent turn loop
 sandbox/                      sbx bootstrap + network policy
-docs/                         notes and runbooks
 ```
-
-Later phases add `db`, `workflows`, `activities`, `tools`, `brain-worker`.
 
 ## Checks
 
@@ -106,8 +78,8 @@ bun run check    # tsc --noEmit + bun test
 
 ## Environment
 
-All configuration is read from process env and validated by
-`packages/shared/src/env.ts`. Empty values are treated as unset. `.env` is
-gitignored; `.env.example` holds placeholders only. Secrets belong only in the
-brain-worker/gateway host processes — never in prompts, tool results, or the
-sandbox.
+Validated by `packages/shared/src/env.ts`; empty values are treated as unset.
+`.env` is gitignored and `.env.example` holds placeholders only. Secrets stay in
+the gateway process — never in prompts, tool results, or the sandbox.
+
+History is in memory for now, so restarting the bot clears conversations.

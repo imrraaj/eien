@@ -51,6 +51,8 @@ export const envSchema = z.object({
   LLM_API_KEY: optionalNonEmpty,
   LLM_MODEL: optionalNonEmpty,
   LLM_TIMEOUT_MS: intWithDefault(120_000),
+  LLM_CONTEXT_WINDOW: intWithDefault(128_000),
+  LLM_MAX_TOKENS: intWithDefault(8_192),
   OPENROUTER_API_KEY: optionalNonEmpty,
   OPENROUTER_BASE_URL: textWithDefault("https://openrouter.ai/api/v1"),
 
@@ -63,6 +65,11 @@ export const envSchema = z.object({
   ALLOWED_TELEGRAM_USER_IDS: telegramUserIds,
 
   SBX_NAME: textWithDefault("agent-1"),
+  SBX_WORKDIR: textWithDefault("/work"),
+  MAX_AGENT_STEPS: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().min(1).max(50).default(12),
+  ),
   MAX_CONCURRENT_WORKERS: z.preprocess(
     emptyToUndefined,
     z.coerce.number().int().min(1).max(16).default(3),

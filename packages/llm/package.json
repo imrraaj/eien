@@ -7,8 +7,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "^3.0.93",
-    "@eien/shared": "workspace:*",
-    "ai": "^7.0.173"
+    "@earendil-works/pi-ai": "^1.5.2",
+    "@eien/shared": "workspace:*"
   }
 }
