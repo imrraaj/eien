@@ -136,6 +136,7 @@ async function main(): Promise<void> {
             "/reset — clear this chat's context",
             "/model — show the active model",
             "/status — sandbox and limits",
+            "/id — show chat and user IDs",
             "/help — this message",
           ].join("\n"),
         );
@@ -146,6 +147,15 @@ async function main(): Promise<void> {
         return;
       case "model":
         await ctx.reply(`Model: ${modelId}`);
+        return;
+      case "id":
+        await ctx.reply(
+          [
+            `chat: ${ctx.chat?.id ?? "unknown"}`,
+            `type: ${ctx.chat?.type ?? "unknown"}`,
+            `you: ${ctx.from?.id ?? "unknown"}`,
+          ].join("\n"),
+        );
         return;
       case "status":
         await ctx.reply(
@@ -171,10 +181,22 @@ async function main(): Promise<void> {
       isGroup,
       text: ctx.message.text,
       botUsername: ctx.me.username,
+      botId: ctx.me.id,
+      entities: ctx.message.entities,
       replyToBot: repliedToBot,
     });
 
-    if (!gate.respond) return;
+    if (!gate.respond) {
+      if (isGroup) {
+        log.info("ignored group message", {
+          chatId: String(ctx.chat.id),
+          chatType: ctx.chat.type,
+          fromId: telegramUserId,
+          entities: ctx.message.entities?.map((entity) => entity.type) ?? [],
+        });
+      }
+      return;
+    }
 
     const text = gate.text.trim();
     if (!text) {
@@ -259,7 +281,18 @@ async function main(): Promise<void> {
 
   await bot.start({
     allowed_updates: ["message"],
-    onStart: (info) => log.info("gateway online", { username: info.username }),
+    onStart: (info) => {
+      log.info("gateway online", {
+        username: info.username,
+        hint: `add the bot to a group, then address it as @${info.username}`,
+      });
+      if (!info.can_read_all_group_messages) {
+        log.warn(
+          "Telegram group privacy is ON: the bot only receives mentions, commands, and replies. Disable it in BotFather (/setprivacy), then remove and re-add the bot to the group.",
+          { canReadAllGroupMessages: false },
+        );
+      }
+    },
   });
 }
 

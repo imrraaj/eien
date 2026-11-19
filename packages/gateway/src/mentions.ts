@@ -1,9 +1,18 @@
 /** Telegram group mention/reply routing. */
 
+export interface MentionEntity {
+  type: string;
+  offset: number;
+  length: number;
+  user?: { id: number; username?: string };
+}
+
 export interface GroupGateInput {
   isGroup: boolean;
   text: string;
   botUsername: string;
+  botId: number;
+  entities?: readonly MentionEntity[];
   replyToBot: boolean;
 }
 
@@ -12,10 +21,10 @@ export interface GroupGateResult {
   text: string;
 }
 
-const MENTION_SAFE = /[.*+?^${}()|[\]\\]/g;
+const ESCAPE = /[.*+?^${}()|[\]\\]/g;
 
 function escapeRegExp(value: string): string {
-  return value.replace(MENTION_SAFE, "\\$&");
+  return value.replace(ESCAPE, "\\$&");
 }
 
 /** Remove every `@botusername` occurrence from the message. */
@@ -24,8 +33,29 @@ export function stripMention(text: string, botUsername: string): string {
   return text.replace(mention, " ").replace(/\s+/g, " ").trim();
 }
 
-function mentionsBot(text: string, botUsername: string): boolean {
-  return new RegExp(`@${escapeRegExp(botUsername)}\\b`, "i").test(text);
+/**
+ * Entity-based mention detection (what Telegram itself considers a mention),
+ * with a text fallback for clients/tests that omit entities.
+ */
+export function messageMentionsBot(input: {
+  text: string;
+  botUsername: string;
+  botId: number;
+  entities?: readonly MentionEntity[];
+}): boolean {
+  const username = input.botUsername.toLowerCase();
+
+  for (const entity of input.entities ?? []) {
+    if (entity.type === "mention") {
+      const value = input.text.slice(entity.offset, entity.offset + entity.length);
+      if (value.toLowerCase() === `@${username}`) return true;
+    }
+    if (entity.type === "text_mention" && entity.user?.id === input.botId) {
+      return true;
+    }
+  }
+
+  return new RegExp(`@${escapeRegExp(input.botUsername)}\\b`, "i").test(input.text);
 }
 
 function commandTargetsBot(text: string, botUsername: string): boolean {
@@ -43,7 +73,7 @@ export function groupGate(input: GroupGateInput): GroupGateResult {
   }
 
   const addressed =
-    mentionsBot(input.text, input.botUsername) ||
+    messageMentionsBot(input) ||
     input.replyToBot ||
     commandTargetsBot(input.text, input.botUsername);
 

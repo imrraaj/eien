@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { groupGate, stripMention } from "./mentions.ts";
+import { groupGate, messageMentionsBot, stripMention } from "./mentions.ts";
 
 const bot = "eienbot";
-const base = { botUsername: bot, replyToBot: false };
+const botId = 9_250_249_177;
+const base = { botUsername: bot, botId, replyToBot: false };
 
 describe("groupGate", () => {
   test("always responds in private chats", () => {
@@ -17,6 +18,29 @@ describe("groupGate", () => {
       respond: true,
       text: "price of btc",
     });
+  });
+
+  test("uses Telegram mention entities", () => {
+    const text = "@eienbot what is btc?";
+    expect(
+      messageMentionsBot({
+        text,
+        botUsername: bot,
+        botId,
+        entities: [{ type: "mention", offset: 0, length: 9 }],
+      }),
+    ).toBe(true);
+  });
+
+  test("uses text_mention entities for the bot id", () => {
+    expect(
+      messageMentionsBot({
+        text: "eien what is btc?",
+        botUsername: bot,
+        botId,
+        entities: [{ type: "text_mention", offset: 0, length: 4, user: { id: botId } }],
+      }),
+    ).toBe(true);
   });
 
   test("mention matching is case-insensitive", () => {
