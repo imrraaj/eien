@@ -7,9 +7,9 @@ import {
   defineTool,
 } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
-import { loadEnv } from "../packages/shared/src/index.ts";
-import { createModelsRegistry } from "../packages/llm/src/index.ts";
-import { sbxExec } from "../packages/sandbox/src/index.ts";
+import { loadEnv } from "../../packages/shared/src/index.ts";
+import { createModelsRegistry } from "../../packages/llm/src/index.ts";
+import { sbxExec } from "../../packages/sandbox/src/index.ts";
 
 const env = loadEnv();
 const sandbox = { name: env.SBX_NAME };
