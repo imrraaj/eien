@@ -3,6 +3,7 @@ import { agentTools, runAgentTool } from "@eien/tools";
 import { createLogger, loadEnv } from "@eien/shared";
 import { Bot, type Context } from "grammy";
 import { runAgentTurn } from "./agent.ts";
+import { ackText } from "./ack.ts";
 import {
   describeIngestedFile,
   ingestTelegramFile,
@@ -18,6 +19,8 @@ import {
 import { splitMessage } from "./text.ts";
 
 const MAX_INPUT_CHARS = 8_000;
+/** Send an acknowledgement if the turn is still running after this long. */
+const ACK_DELAY_MS = 10_000;
 
 function defaultSystemPrompt(sandboxName: string, root: string): string {
   return [
@@ -110,6 +113,7 @@ async function main(): Promise<void> {
     ctx: Context,
     conversationId: string,
     messages: Message[],
+    onProgress?: () => void,
   ): Promise<{ messages: Message[]; text: string }> {
     return runAgentTurn({
       llm,
@@ -119,6 +123,7 @@ async function main(): Promise<void> {
       maxSteps: env.MAX_AGENT_STEPS,
       timeoutMs: env.LLM_TIMEOUT_MS,
       sessionId: `telegram-${conversationId}`,
+      onToolStart: () => onProgress?.(),
       executeTool: (call) =>
         runAgentTool(call, {
           sandbox,
@@ -222,8 +227,18 @@ async function main(): Promise<void> {
     const stopTyping = startTyping(ctx);
     const startedAt = Date.now();
 
+    let acknowledged = false;
+    const acknowledge = (force = false) => {
+      if (acknowledged) return;
+      // A tool call right away does not mean a slow turn; let the timer decide.
+      if (!force && Date.now() - startedAt < 3_000) return;
+      acknowledged = true;
+      void ctx.reply(ackText(prompt)).catch(() => undefined);
+    };
+    const ackTimer = setTimeout(() => acknowledge(true), ACK_DELAY_MS);
+
     try {
-      const result = await runTurn(ctx, conversationId, messages);
+      const result = await runTurn(ctx, conversationId, messages, acknowledge);
       history.set(conversationId, result.messages);
       await replyInChunks(ctx, result.text || "(the model returned no text)");
       log.info("turn complete", {
@@ -245,6 +260,7 @@ async function main(): Promise<void> {
         .reply(`Model call failed:\n${errorText(error).slice(0, 800)}`)
         .catch(() => undefined);
     } finally {
+      clearTimeout(ackTimer);
       stopTyping();
     }
   }

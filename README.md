@@ -74,6 +74,10 @@ than stopping silently; send any follow-up message to continue. Turns are still
 synchronous, so a very long task keeps one "typing" indicator going until it
 finishes or the process restarts.
 
+If a turn is still running after ~10 seconds (or starts using tools after 3
+seconds), the bot first posts a short `On it — …` acknowledgement quoting the
+request, so slow work is visible. Fast replies skip the acknowledgement.
+
 ### Groups
 
 Add the bot to a group and address it directly:

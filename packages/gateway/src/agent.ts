@@ -14,6 +14,8 @@ export interface AgentTurnOptions {
   timeoutMs: number;
   sessionId: string;
   executeTool: (call: ToolCall) => Promise<{ text: string; isError: boolean }>;
+  /** Called before a tool runs, for "still working" signals. */
+  onToolStart?: (call: ToolCall) => void;
   onToolCall?: (call: ToolCall, result: { isError: boolean; ms: number }) => void;
 }
 
@@ -63,6 +65,7 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
 
     for (const call of calls) {
       const startedAt = Date.now();
+      options.onToolStart?.(call);
       const result = await options.executeTool(call);
       working.push({
         role: "toolResult",
