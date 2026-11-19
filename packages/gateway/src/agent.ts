@@ -18,6 +18,8 @@ export interface AgentTurnOptions {
   executeTool: (call: ToolCall) => Promise<{ text: string; isError: boolean }>;
   /** Called before a tool runs, for "still working" signals. */
   onToolStart?: (call: ToolCall) => void;
+  /** Messages that arrived mid-turn, folded in at the next model step. */
+  takePending?: () => Message[];
   onToolCall?: (call: ToolCall, result: { isError: boolean; ms: number }) => void;
 }
 
@@ -47,6 +49,9 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
   });
 
   for (let step = 0; step < options.maxSteps; step += 1) {
+    const pending = options.takePending?.() ?? [];
+    if (pending.length > 0) working.push(...pending);
+
     if (options.signal?.aborted) return stopped();
 
     let assistant: AssistantMessage;

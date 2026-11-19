@@ -123,4 +123,55 @@ describe("runAgentTurn", () => {
     });
     expect(result.text).toContain("ran out of steps");
   });
+
+  test("folds mid-turn messages into the next model call", async () => {
+    const { llm, seen } = fakeLlm([
+      assistant([toolCall]),
+      assistant([{ type: "text", text: "done" }]),
+    ]);
+
+    const followUp: Message = { role: "user", content: "also rename it", timestamp: 1 };
+    let delivered = false;
+
+    const result = await runAgentTurn({
+      llm,
+      messages: [user],
+      system: "test",
+      tools: [],
+      maxSteps: 5,
+      timeoutMs: 1_000,
+      sessionId: "s",
+      takePending: () => {
+        if (delivered) return [];
+        delivered = true;
+        return [followUp];
+      },
+      executeTool: async () => ({ text: "ok", isError: false }),
+    });
+
+    expect(seen[1]?.some((message) => message.content === "also rename it")).toBe(true);
+    expect(result.messages.some((message) => message.content === "also rename it")).toBe(
+      true,
+    );
+  });
+
+  test("returns aborted when the signal fires", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const { llm } = fakeLlm([]);
+
+    const result = await runAgentTurn({
+      llm,
+      messages: [user],
+      system: "test",
+      tools: [],
+      maxSteps: 5,
+      timeoutMs: 1_000,
+      sessionId: "s",
+      signal: controller.signal,
+      executeTool: async () => ({ text: "", isError: false }),
+    });
+
+    expect(result.aborted).toBe(true);
+  });
 });

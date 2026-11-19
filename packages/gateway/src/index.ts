@@ -18,6 +18,7 @@ import {
   toTelegramChunks,
 } from "./markdown.ts";
 import { createLimiter } from "./limiter.ts";
+import { Steering } from "./steering.ts";
 import { splitMessage } from "./text.ts";
 
 const MAX_INPUT_CHARS = 8_000;
@@ -100,6 +101,7 @@ async function main(): Promise<void> {
   const history = new ConversationStore();
   /** In-flight turn per conversation, so `/stop` can abort it. */
   const running = new Map<string, AbortController>();
+  const steering = new Steering();
   const limitWorkers = createLimiter(env.MAX_CONCURRENT_WORKERS);
   let workerSeq = 0;
   const workerTools = agentTools.filter((tool) => tool.name !== "spawn_agent");
@@ -201,6 +203,7 @@ async function main(): Promise<void> {
       sessionId: `telegram-${conversationId}`,
       signal,
       onToolStart: () => onProgress?.(),
+      takePending: () => steering.take(conversationId),
       executeTool: (call) =>
         runAgentTool(call, {
           sandbox,
@@ -261,8 +264,9 @@ async function main(): Promise<void> {
         }
         await ctx.reply("Stopping…");
         controller.abort();
+        const dropped = steering.clear(conversationId);
         const killed = await killSandboxWork(sandbox, env.SBX_WORKDIR).catch(() => 0);
-        log.info("turn stopped", { conversationId, killed });
+        log.info("turn stopped", { conversationId, killed, dropped });
         return;
       }
       case "model":
@@ -336,53 +340,97 @@ async function main(): Promise<void> {
       content: prompt,
       timestamp: Date.now(),
     };
-    const messages = [...history.get(conversationId), userMessage];
+
+    // A turn is already running in this chat: fold this in instead of waiting.
+    if (running.has(conversationId)) {
+      steering.add(conversationId, userMessage);
+      log.info("steering message", {
+        telegramUserId,
+        chatId: conversationId,
+      });
+      await ctx
+        .reply("Added to the running task — the agent will pick it up at its next step.")
+        .catch(() => undefined);
+      return;
+    }
+
+    await runPrompt(ctx, telegramUserId, conversationId, [userMessage]);
+  }
+
+  /** Run a batch of user messages as one or more serial turns. */
+  async function runPrompt(
+    ctx: Context,
+    telegramUserId: string,
+    conversationId: string,
+    batch: Message[],
+  ): Promise<void> {
+    const controller = new AbortController();
+    running.set(conversationId, controller);
     const stopTyping = startTyping(ctx);
     const startedAt = Date.now();
 
-    let acknowledged = false;
-    const acknowledge = (force = false) => {
-      if (acknowledged) return;
-      // A tool call right away does not mean a slow turn; let the timer decide.
-      if (!force && Date.now() - startedAt < 3_000) return;
-      acknowledged = true;
-      void ctx.reply(ackText(prompt)).catch(() => undefined);
-    };
-    const ackTimer = setTimeout(() => acknowledge(true), ACK_DELAY_MS);
-    const controller = new AbortController();
-    running.set(conversationId, controller);
-
     try {
-      const result = await runTurn(
-        ctx,
-        conversationId,
-        messages,
-        controller.signal,
-        acknowledge,
-      );
-      history.set(conversationId, result.messages);
+      let pending = batch;
 
-      if (result.aborted) {
-        const summary = await summarizeStopped(conversationId, result.messages);
-        const text = [result.text, summary].filter(Boolean).join("\n\n");
-        await replyInChunks(ctx, text || "Stopped.");
-        log.info("turn aborted", {
+      while (pending.length > 0 && !controller.signal.aborted) {
+        const messages = [...history.get(conversationId), ...pending];
+        const preview =
+          pending
+            .map((message) => (typeof message.content === "string" ? message.content : ""))
+            .filter(Boolean)
+            .join(" ") || "the current task";
+
+        let acknowledged = false;
+        const turnStartedAt = Date.now();
+        const acknowledge = (force = false) => {
+          if (acknowledged) return;
+          // A tool call right away does not mean a slow turn; let the timer decide.
+          if (!force && Date.now() - turnStartedAt < 3_000) return;
+          acknowledged = true;
+          void ctx.reply(ackText(preview)).catch(() => undefined);
+        };
+
+        const ackTimer = setTimeout(() => acknowledge(true), ACK_DELAY_MS);
+        let result: Awaited<ReturnType<typeof runTurn>>;
+        try {
+          result = await runTurn(
+            ctx,
+            conversationId,
+            messages,
+            controller.signal,
+            acknowledge,
+          );
+        } finally {
+          clearTimeout(ackTimer);
+        }
+
+        history.set(conversationId, result.messages);
+
+        if (result.aborted) {
+          const summary = await summarizeStopped(conversationId, result.messages);
+          const text = [result.text, summary].filter(Boolean).join("\n\n");
+          await replyInChunks(ctx, text || "Stopped.");
+          log.info("turn aborted", {
+            telegramUserId,
+            chatId: conversationId,
+            ms: Date.now() - startedAt,
+            messageCount: result.messages.length,
+          });
+          return;
+        }
+
+        await replyInChunks(ctx, result.text || "(the model returned no text)");
+        log.info("turn complete", {
           telegramUserId,
           chatId: conversationId,
+          chatType: ctx.chat?.type,
           ms: Date.now() - startedAt,
           messageCount: result.messages.length,
         });
-        return;
-      }
 
-      await replyInChunks(ctx, result.text || "(the model returned no text)");
-      log.info("turn complete", {
-        telegramUserId,
-        chatId: conversationId,
-        chatType: ctx.chat?.type,
-        ms: Date.now() - startedAt,
-        messageCount: result.messages.length,
-      });
+        // Messages that arrived too late for the loop start a follow-up turn.
+        pending = steering.take(conversationId);
+      }
     } catch (error) {
       log.error("turn failed", {
         telegramUserId,
@@ -395,9 +443,15 @@ async function main(): Promise<void> {
         .reply(`Model call failed:\n${errorText(error).slice(0, 800)}`)
         .catch(() => undefined);
     } finally {
-      clearTimeout(ackTimer);
-      if (running.get(conversationId) === controller) running.delete(conversationId);
+      if (running.get(conversationId) === controller) {
+        running.delete(conversationId);
+      }
       stopTyping();
+
+      const leftover = steering.take(conversationId);
+      if (leftover.length > 0) {
+        void runPrompt(ctx, telegramUserId, conversationId, leftover);
+      }
     }
   }
 

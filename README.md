@@ -83,6 +83,12 @@ If a turn is still running after ~10 seconds (or starts using tools after 3
 seconds), the bot first posts a short `On it — …` acknowledgement quoting the
 request, so slow work is visible. Fast replies skip the acknowledgement.
 
+Messages sent while a turn is running are **not** queued behind it: they are
+folded into the running turn at its next model step, and the bot replies
+"Added to the running task". That means you can correct course or add detail
+without waiting for the whole task. A long single tool call (up to 15 minutes)
+still has to finish before the message is read.
+
 ### Groups
 
 Add the bot to a group and address it directly:
