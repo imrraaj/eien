@@ -48,6 +48,23 @@ headers are only added for openrouter.ai.
 Commands: `/reset`, `/model`, `/status`, `/help`. The bot uses long polling, so
 no inbound ports are needed.
 
+### Users
+
+`ALLOWED_TELEGRAM_USER_IDS` takes a comma-separated list of **numeric** Telegram
+user IDs:
+
+```dotenv
+ALLOWED_TELEGRAM_USER_IDS=111111111,222222222
+```
+
+Restart the bot after editing. Anyone not in the list is ignored. All allowed
+users share the same sandbox and `/work`, but each private chat has its own
+history; groups share one history per group chat.
+
+History is **in memory only**: the last 40 messages (or ~48 K characters) per
+conversation, lost on restart, cleared by `/reset`. Postgres-backed history is
+the planned next step.
+
 ### Groups
 
 Add the bot to a group and address it directly:
