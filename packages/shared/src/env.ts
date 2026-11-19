@@ -1,7 +1,18 @@
 import { z } from "zod";
 
+/** Treat empty / whitespace-only env values as unset. */
+const emptyToUndefined = (value: unknown): unknown =>
+  typeof value === "string" && value.trim() === "" ? undefined : value;
+
 const nonEmpty = z.string().trim().min(1);
-const optionalNonEmpty = nonEmpty.optional();
+const optionalNonEmpty = z.preprocess(emptyToUndefined, nonEmpty.optional());
+const textWithDefault = (fallback: string) =>
+  z.preprocess(emptyToUndefined, z.string().trim().min(1).default(fallback));
+const intWithDefault = (fallback: number) =>
+  z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(fallback),
+  );
 
 /** Comma-separated Telegram user IDs -> string[] (numeric IDs only). */
 const telegramUserIds = z
@@ -13,36 +24,49 @@ const telegramUserIds = z
       .map((id) => id.trim())
       .filter(Boolean),
   )
-  .pipe(z.array(z.string().regex(/^\d+$/, "must be a numeric Telegram user ID")));
+  .pipe(
+    z.array(z.string().regex(/^\d+$/, "must be a numeric Telegram user ID")),
+  );
 
 /**
- * Environment schema. Secrets stay optional for now so infrastructure-only
- * processes (compose smoke checks, tooling) can start without them. Each
- * process validates the subset it actually needs at startup in later phases.
+ * Environment schema. Secrets stay optional so infrastructure-only processes
+ * can start without them; each process validates the subset it needs at
+ * startup (e.g. the gateway requires the Telegram token and an LLM key).
  */
 export const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 
-  TEMPORAL_ADDRESS: z.string().default("localhost:7233"),
-  TEMPORAL_NAMESPACE: z.string().default("default"),
-  TEMPORAL_TASK_QUEUE: z.string().default("brain"),
+  TEMPORAL_ADDRESS: textWithDefault("localhost:7233"),
+  TEMPORAL_NAMESPACE: textWithDefault("default"),
+  TEMPORAL_TASK_QUEUE: textWithDefault("brain"),
 
-  DATABASE_URL: z
-    .string()
-    .default("postgres://agent:agent@localhost:5432/agent"),
+  DATABASE_URL: textWithDefault(
+    "postgres://agent:agent@localhost:5432/agent",
+  ),
 
+  // Any OpenAI-compatible endpoint. OpenRouter is the default, and the legacy
+  // OPENROUTER_* names are still read as fallbacks.
+  LLM_BASE_URL: optionalNonEmpty,
+  LLM_API_KEY: optionalNonEmpty,
+  LLM_MODEL: optionalNonEmpty,
+  LLM_TIMEOUT_MS: intWithDefault(120_000),
   OPENROUTER_API_KEY: optionalNonEmpty,
-  OPENROUTER_BASE_URL: z.string().default("https://openrouter.ai/api/v1"),
+  OPENROUTER_BASE_URL: textWithDefault("https://openrouter.ai/api/v1"),
+
   MODEL_MAIN: optionalNonEmpty,
   MODEL_WORKER: optionalNonEmpty,
   MODEL_CHEAP: optionalNonEmpty,
+  SYSTEM_PROMPT: optionalNonEmpty,
 
   TELEGRAM_BOT_TOKEN: optionalNonEmpty,
   ALLOWED_TELEGRAM_USER_IDS: telegramUserIds,
 
-  SBX_NAME: z.string().default("agent-1"),
-  MAX_CONCURRENT_WORKERS: z.coerce.number().int().min(1).max(16).default(3),
+  SBX_NAME: textWithDefault("agent-1"),
+  MAX_CONCURRENT_WORKERS: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().min(1).max(16).default(3),
+  ),
 
   GOOGLE_CLI_BIN: optionalNonEmpty,
   GOOGLE_CLI_CONFIG_DIR: optionalNonEmpty,

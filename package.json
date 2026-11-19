@@ -12,7 +12,10 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "check": "bun run typecheck",
+    "check": "bun run typecheck && bun test",
+    "test": "bun test",
+    "bot": "bun packages/gateway/src/index.ts",
+    "bot:dev": "bun --watch packages/gateway/src/index.ts",
     "up": "docker compose up -d",
     "down": "docker compose down",
     "ps": "docker compose ps",
