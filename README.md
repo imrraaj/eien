@@ -78,13 +78,15 @@ One run may use up to `MAX_AGENT_STEPS` model turns (default and hard cap 100).
 Single bash commands may run up to 15 minutes. A run interrupted by a restart
 resumes from its last committed step.
 
-If a run is still going after ~10 seconds, the bot first posts a short
-`On it — …` acknowledgement quoting the request. Fast replies skip it.
+If a run is still going after a minute, the bot posts a short
+`Still working on it …` message. Faster replies skip it; short turns just show
+the typing indicator.
 
-Messages sent while a run is running are **steers**: pi-durable queues them and
-places them after the current tool round, then the agent continues with your
-correction. The bot replies "Added to the running task". A long single tool call
-still has to finish before the steer is read.
+Messages sent while a run is running are **steers**: the bot replies "Queued"
+immediately and pi-durable places the message after the current tool round, then
+the agent continues with your correction. The Telegram handler never waits for
+the turn, so new messages and `/stop` are read while the agent works. A long
+single tool call still has to finish before the steer is read.
 
 ### Groups
 
@@ -111,6 +113,7 @@ the bot in BotFather (`/setprivacy`).
 | `web_search` | host | Current information via Exa MCP (keyless) |
 | `web_fetch` | host | Read a URL as markdown/text |
 | `subagent` | host + sandbox | Spawn/steer/stop persistent background workers |
+| `schedule` | host | Durable one-shot or repeating timers in this chat |
 
 ### Subagents
 
@@ -128,6 +131,26 @@ When a worker finishes, a durable reporter posts its answer back into the main
 conversation as a follow-up message; the main agent then replies to the user.
 Workers survive restarts and are separate from the parent's step budget. Give
 parallel workers separate directories.
+
+### Schedules
+
+`schedule` is a durable timer owned by the chat — no worker, no second
+conversation. `schedule({ name, prompt, delay: "2m" })` stores a task that
+sleeps, then submits `prompt` back into the conversation, where the agent
+answers it normally. Add `every: "15m"` to repeat; missed repeats are skipped,
+not replayed.
+
+| Call | Effect |
+|---|---|
+| `schedule({ name, prompt, delay, every? })` | create (names are unique per chat) |
+| `schedule({ action: "list" })` | same list as `/schedules` |
+| `schedule({ action: "cancel", name })` | stop and delete it |
+
+Ad-hoc cancellation needs no model: `/schedules` lists `name — in 12m, every 15m
+— preview`, and `/unschedule joke` removes it. Cancelling deletes the doc entry
+and aborts the task; if a fire races the cancel, the task sees the entry gone
+and exits. Delays are single-unit (`30s`, `2m`, `1h`, `2d`), max 30 days, and a
+repeat cannot be shorter than 10 seconds.
 
 
 Incoming photos, videos, audio, voice notes, and documents are downloaded into

@@ -1,6 +1,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   AssistantEntry,
+  ConversationIdle,
   Harness,
   LiveDoc,
   configure,
@@ -34,6 +35,7 @@ import type { Context } from "grammy";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { sendSandboxFile } from "./files.ts";
+import { formatDuration, formatSchedules, parseDelay, type ScheduleInfo } from "./schedule.ts";
 
 const CHORD = BACKGROUND_CONTEXT;
 
@@ -47,16 +49,20 @@ export interface RuntimeOptions {
   chatMapPath: string;
   sandbox: SandboxConfig;
   log: Logger;
-  /** Deliver an agent answer to a chat. */
-  onAnswer: (chatId: string, text: string) => Promise<void>;
+  /** Deliver an agent answer to a chat, optionally quoting a message. */
+  onAnswer: (chatId: string, text: string, replyTo?: number) => Promise<void>;
 }
 
 export interface AgentRuntime {
-  run(ctx: Context, chatId: string, text: string, onProgress?: () => void): Promise<string>;
-  steer(chatId: string, text: string): Promise<boolean>;
+  run(ctx: Context, chatId: string, text: string, requestId?: string): Promise<string>;
+  steer(chatId: string, text: string, requestId?: string, replyTo?: number): Promise<boolean>;
   abort(chatId: string): Promise<void>;
   reset(chatId: string): Promise<void>;
   isBusy(chatId: string): boolean;
+  /** Formatted schedule list for a chat. */
+  schedules(chatId: string): Promise<string>;
+  /** Cancel a named schedule; false when there is none. */
+  cancelSchedule(chatId: string, name: string): Promise<boolean>;
 }
 
 type SubagentRecord = {
@@ -177,6 +183,97 @@ const Reporter = defineTask<ReporterInput, ReporterState, null>({
     runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
 });
 
+type ScheduleInput = { name: string; prompt: string; at: number; everyMs?: number };
+type ScheduleState = { phase: "wait"; at: number } | { phase: "deliver"; at: number };
+type ScheduleEntry = {
+  taskId: TaskId;
+  prompt: string;
+  everyMs?: number;
+  nextAt: number;
+};
+
+/** Named schedules in this conversation, so they can be listed and cancelled. */
+const Schedules = defineDoc<{ items: Record<string, ScheduleEntry> }>({
+  checkpointWhen: () => false,
+  kind: "eien.schedules",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "initial",
+  initial: () => ({ items: {} }),
+});
+
+/**
+ * Durable reminder: sleep, put the prompt back into the conversation, and, for a
+ * repeating schedule, sleep again. Cancelling means deleting the doc entry; the
+ * task drops itself when it wakes and finds none.
+ */
+const Schedule = defineTask<ScheduleInput, ScheduleState, null>({
+  name: "eien.schedule",
+  version: 1,
+  initial: (input) => ({ phase: "wait", at: input.at }),
+  phases: {
+    wait: (task, runtime, context) =>
+      runtime.sleepUntil(task.state.checkpoint.at, { phase: "deliver", at: task.state.checkpoint.at }, context),
+    deliver: async (task, runtime, context) => {
+      const due = task.state.checkpoint.at;
+      const { name, prompt, everyMs } = task.input;
+
+      const entry = (await runtime.snapshot(Schedules, runtime.conversationId, context))?.items[name];
+      if (!entry) {
+        // Cancelled while it slept.
+        await runtime.commit(
+          () => ({ status: "terminal", outcome: { status: "aborted" } }),
+          context,
+        );
+        return;
+      }
+
+      const main = await runtime.conversation(runtime.conversationId, context);
+      if (main) {
+        await main.submit(
+          {
+            type: "input",
+            content: prompt,
+            whenBusy: "followUp",
+            requestId: `schedule:${runtime.taskId}:${due}`,
+          },
+          context,
+        );
+      }
+
+      if (everyMs === undefined) {
+        await runtime.commit(
+          async (tx) => {
+            const doc = await tx.doc(Schedules, runtime.conversationId);
+            delete doc.items[name];
+            return { status: "terminal", outcome: { status: "completed", result: null } };
+          },
+          context,
+        );
+        return;
+      }
+
+      // Skip repeats missed while the process was down instead of firing them all.
+      const next = Math.max(runtime.now(), due + everyMs);
+      await runtime.commit(
+        async (tx) => {
+          const doc = await tx.doc(Schedules, runtime.conversationId);
+          const current = doc.items[name];
+          if (!current) {
+            return { status: "terminal", outcome: { status: "aborted" } };
+          }
+          current.nextAt = next;
+          return { status: "running", checkpoint: { phase: "wait", at: next } };
+        },
+        context,
+      );
+    },
+  },
+  abort: (_task, runtime, context) =>
+    runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
+});
+
 function textOf(entry: unknown): string {
   const model = (entry as { model?: unknown }).model;
   if (!Array.isArray(model)) return "";
@@ -198,6 +295,15 @@ function textOf(entry: unknown): string {
 
 function toolResult(text: string, isError = false): ToolExecutionResult {
   return { output: [{ type: "text", text }], isError };
+}
+
+function scheduleInfos(items: Record<string, ScheduleEntry>): ScheduleInfo[] {
+  return Object.entries(items).map(([name, item]) => ({
+    name,
+    prompt: item.prompt,
+    everyMs: item.everyMs,
+    nextAt: item.nextAt,
+  }));
 }
 
 export async function createAgentRuntime(options: RuntimeOptions): Promise<AgentRuntime> {
@@ -396,6 +502,80 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
     },
   });
 
+  const schedule = defineTool({
+    name: "schedule",
+    description:
+      "Durable timers for this chat. action=add (default): schedule({ name, prompt, delay, every? }) runs the prompt later; with every it repeats. action=cancel stops one by name, action=list shows them. Delays look like \"30s\", \"2m\", \"1h\". Survives restarts.",
+    parameters: obj({
+      action: opt(oneOf(["add", "list", "cancel"])),
+      name: opt(str()),
+      delay: opt(str()),
+      every: opt(str()),
+      prompt: opt(str()),
+    }),
+    execute: async (args, api, callContext) => {
+      const action = args.action ?? "add";
+      const readItems = async () =>
+        (await api.snapshot(Schedules, api.conversationId, callContext))?.items ?? {};
+
+      if (action === "list") {
+        return toolResult(formatSchedules(scheduleInfos(await readItems()), api.now()));
+      }
+
+      const name = args.name?.trim();
+      if (!name) return toolResult(`${action} needs a name.`, true);
+
+      if (action === "cancel") {
+        const entry = (await readItems())[name];
+        if (!entry) return toolResult(`No schedule named ${name}.`, true);
+        await api.commit(async (tx) => {
+          const doc = await tx.doc(Schedules, api.conversationId);
+          delete doc.items[name];
+        }, callContext);
+        await harness.abortTask(entry.taskId, callContext).catch(() => undefined);
+        return toolResult(`Cancelled ${name}.`);
+      }
+
+      const prompt = args.prompt;
+      if (prompt === undefined) return toolResult("add needs a prompt.", true);
+      const delay = parseDelay(args.delay ?? "");
+      if (delay === undefined) {
+        return toolResult(`invalid delay "${args.delay ?? ""}"; use e.g. 30s, 2m, 1h`, true);
+      }
+      if (delay > 30 * 86_400_000) return toolResult("delay is too long (max 30 days)", true);
+
+      const everyMs = args.every === undefined ? undefined : parseDelay(args.every);
+      if (args.every !== undefined && everyMs === undefined) {
+        return toolResult(`invalid repeat "${args.every}"; use e.g. 15m, 1h`, true);
+      }
+      if (everyMs !== undefined && everyMs < 10_000) {
+        return toolResult("a repeating schedule must be at least 10s apart", true);
+      }
+
+      if (Object.hasOwn(await readItems(), name)) {
+        return toolResult(`"${name}" already exists; cancel it first or pick another name.`, true);
+      }
+
+      const at = api.now() + delay;
+      await api.commit(async (tx) => {
+        const doc = await tx.doc(Schedules, api.conversationId);
+        if (doc.items[name]) throw new Error(`schedule "${name}" already exists`);
+        const taskId = await tx.createTask(
+          Schedule,
+          { name, prompt, at, everyMs },
+          { ownership: { kind: "conversation" }, background: true },
+        );
+        doc.items[name] = { taskId, prompt, everyMs, nextAt: at };
+      }, callContext);
+
+      return toolResult(
+        everyMs === undefined
+          ? `Scheduled "${name}" in ${formatDuration(delay)}.`
+          : `Scheduled "${name}" every ${formatDuration(everyMs)}, first in ${formatDuration(delay)}.`,
+      );
+    },
+  });
+
   subagentExtension = defineExtension({
     name: "eien-subagents",
     tasks: [Anchor, Reporter],
@@ -404,7 +584,8 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
 
   const toolsExtension = defineExtension({
     name: "eien-tools",
-    tools: [bash, read, write, edit, sendFile, webSearch, webFetch],
+    tasks: [Schedule],
+    tools: [bash, read, write, edit, sendFile, webSearch, webFetch, schedule],
   });
 
   const registry = createRegistry();
@@ -420,6 +601,14 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
     },
     CHORD,
   );
+
+  // A failed session never recovers by itself; exit so the supervisor restarts us
+  // with a fresh open instead of silently rejecting every later call.
+  void harness.closed.then((end) => {
+    if (end.kind !== "failed") return;
+    log.error("durable storage failed; exiting", { error: end.error });
+    setTimeout(() => process.exit(1), 100);
+  });
 
   // ── chat -> conversation mapping ─────────────────────────────────────────
   await mkdir(dirname(options.chatMapPath), { recursive: true });
@@ -442,6 +631,8 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
   };
 
   const busy = new Set<string>();
+  /** Telegram message to quote when answering, per chat. */
+  const replyTargets = new Map<string, number>();
 
   /**
    * Forward finished answers to Telegram. This is also how a background subagent's
@@ -470,11 +661,39 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
         const text = textOf(entry);
         if (!text) continue;
 
-        await options.onAnswer(chatId, text).catch((error: unknown) => {
+        await options.onAnswer(chatId, text, replyTargets.get(chatId)).catch((error: unknown) => {
           log.error("could not deliver answer", { chatId, error });
         });
       }
     });
+  }
+
+  const provider = options.modelProvider ?? "eien";
+
+  /**
+   * Conversations keep the agent settings they were created with, so after a
+   * model or prompt change the stored model can point at a model the registry no
+   * longer has (a run then fails `no_model`). Bring those settings up to date.
+   */
+  async function syncAgent(conversation: Conversation): Promise<void> {
+    const agent = await conversation.agent(CHORD);
+    const stale =
+      agent.model?.provider !== provider ||
+      agent.model?.modelId !== options.modelId ||
+      agent.instructions !== options.system ||
+      agent.cwd !== env.SBX_WORKDIR ||
+      agent.maxTurns !== env.MAX_AGENT_STEPS;
+    if (!stale) return;
+
+    await conversation.configure(
+      {
+        model: { provider, modelId: options.modelId },
+        instructions: options.system,
+        cwd: env.SBX_WORKDIR,
+        maxTurns: env.MAX_AGENT_STEPS,
+      },
+      CHORD,
+    );
   }
 
   async function conversationFor(chatId: string): Promise<Conversation> {
@@ -485,6 +704,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
         CHORD,
       );
       if (conversation) {
+        await syncAgent(conversation);
         await watchConversation(conversation, chatId);
         return conversation;
       }
@@ -494,7 +714,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
       {
         ownership: { kind: "ownerless" },
         agent: {
-          model: { provider: options.modelProvider ?? "eien", modelId: options.modelId },
+          model: { provider, modelId: options.modelId },
           extensions: [toolsExtension, subagentExtension],
           instructions: options.system,
           cwd: env.SBX_WORKDIR,
@@ -517,7 +737,10 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
       conversationId as unknown as ConversationId,
       CHORD,
     );
-    if (conversation) await watchConversation(conversation, chatId);
+    if (conversation) {
+      await syncAgent(conversation);
+      await watchConversation(conversation, chatId);
+    }
   }
   harness.resume();
   log.info("durable runtime ready", { chats: chatMap.size });
@@ -525,41 +748,57 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
   return {
     isBusy: (chatId) => busy.has(chatId),
 
-    async run(ctx, chatId, text, onProgress) {
+    async run(ctx, chatId, text, requestId) {
       const conversation = await conversationFor(chatId);
       contexts.set(conversation.id, ctx);
+      const messageId = ctx.message?.message_id;
+      if (messageId !== undefined) replyTargets.set(chatId, messageId);
       busy.add(chatId);
 
-      const timer = onProgress ? setTimeout(onProgress, 10_000) : undefined;
-
       try {
-        const submission = await conversation.submit({ type: "input", content: text }, CHORD);
+        const submission = await conversation.submit(
+          { type: "input", content: text, requestId },
+          CHORD,
+        );
         const settled = await submission.wait(CHORD);
 
         // The watcher delivers the answer; only failures need a direct reply.
         if (settled.status === "done") return "";
 
-        return settled.reason === "turn_limit"
-          ? "Hit the step limit. Send another message to continue."
-          : `Stopped (${settled.status}${settled.reason ? `: ${settled.reason}` : ""}).`;
+        if (settled.reason === "turn_limit") {
+          return "Hit the step limit. Send another message to continue.";
+        }
+        const detail =
+          typeof settled.detail === "string"
+            ? settled.detail
+            : settled.detail === undefined
+              ? undefined
+              : JSON.stringify(settled.detail);
+        return `Stopped (${settled.status}${settled.reason ? `: ${settled.reason}` : ""}${detail ? ` — ${detail}` : ""}).`;
       } finally {
-        if (timer) clearTimeout(timer);
         busy.delete(chatId);
         contexts.delete(conversation.id);
       }
     },
 
-    async steer(chatId, text) {
+    async steer(chatId, text, requestId, replyTo) {
       const conversation = await conversationFor(chatId);
+      if (replyTo !== undefined) replyTargets.set(chatId, replyTo);
       try {
         await conversation.submit(
-          { type: "input", content: text, whenBusy: "steer", whenIdle: "reject" },
+          { type: "input", content: text, requestId, whenBusy: "steer", whenIdle: "reject" },
           CHORD,
         );
         return true;
       } catch (error) {
-        log.warn("steer rejected", { chatId, error });
-        return false;
+        if (!(error instanceof ConversationIdle)) {
+          log.warn("steer rejected", { chatId, error });
+          return false;
+        }
+        // No run to steer (it finished, or has not started yet): let the message
+        // start the next turn instead of making the user send it again.
+        await conversation.submit({ type: "input", content: text, requestId }, CHORD);
+        return true;
       }
     },
 
@@ -572,6 +811,30 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
     async reset(chatId) {
       const conversation = await conversationFor(chatId);
       await conversation.reset(undefined, CHORD);
+    },
+
+    async schedules(chatId) {
+      const conversation = await conversationFor(chatId);
+      // Copy inside the commit: document drafts die once it settles.
+      const infos = await conversation.commit(async (tx) => {
+        const items = (await tx.doc(Schedules, conversation.id)).items;
+        return scheduleInfos(items);
+      }, CHORD);
+      return formatSchedules(infos, Date.now());
+    },
+
+    async cancelSchedule(chatId, name) {
+      const conversation = await conversationFor(chatId);
+      const taskId = await conversation.commit(async (tx) => {
+        const doc = await tx.doc(Schedules, conversation.id);
+        const found = doc.items[name];
+        if (!found) return undefined;
+        delete doc.items[name];
+        return found.taskId;
+      }, CHORD);
+      if (taskId === undefined) return false;
+      await harness.abortTask(taskId, CHORD).catch(() => undefined);
+      return true;
     },
   };
 }

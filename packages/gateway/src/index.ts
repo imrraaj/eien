@@ -1,7 +1,7 @@
 import { createLlm, createModelsRegistry } from "@eien/llm";
 import { createLogger, loadEnv } from "@eien/shared";
 import { Bot, type Context } from "grammy";
-import { ackText } from "./ack.ts";
+import { ACK_TEXT } from "./ack.ts";
 import {
   describeIngestedFile,
   ingestTelegramFile,
@@ -17,8 +17,8 @@ import { defaultSystemPrompt } from "./prompt.ts";
 import { splitMessage } from "./text.ts";
 
 const MAX_INPUT_CHARS = 8_000;
-/** Send an acknowledgement if the turn is still running after this long. */
-const ACK_DELAY_MS = 10_000;
+/** Only a genuinely long turn gets a message; short ones just show typing. */
+const ACK_DELAY_MS = 60_000;
 
 function errorText(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -38,11 +38,24 @@ async function sendInChunks(
   api: Context["api"],
   chatId: number | string,
   text: string,
+  replyTo?: number,
 ): Promise<void> {
+  let first = true;
   for (const chunk of toTelegramChunks(text, TELEGRAM_CHUNK_LIMIT)) {
+    const reply = first && replyTo !== undefined ? { reply_parameters: { message_id: replyTo } } : {};
+    first = false;
     try {
-      await api.sendMessage(chatId, chunk, { parse_mode: "HTML" });
+      await api.sendMessage(chatId, chunk, { parse_mode: "HTML", ...reply });
     } catch {
+      // The quoted message may be gone; retry without the quote before falling back to plain text.
+      if (replyTo !== undefined) {
+        try {
+          await api.sendMessage(chatId, chunk, { parse_mode: "HTML" });
+          continue;
+        } catch {
+          // Fall through to the plain-text path.
+        }
+      }
       // Telegram rejected the markup: resend as readable plain text.
       for (const plain of splitMessage(htmlToPlainText(chunk))) {
         await api.sendMessage(chatId, plain);
@@ -90,7 +103,7 @@ async function main(): Promise<void> {
     chatMapPath: `${env.STATE_DIR}/chats.json`,
     sandbox,
     log,
-    onAnswer: (chatId, text) => sendInChunks(bot.api, chatId, text),
+    onAnswer: (chatId, text, replyTo) => sendInChunks(bot.api, chatId, text, replyTo),
   });
 
   const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
@@ -127,6 +140,8 @@ async function main(): Promise<void> {
             "",
             "/reset — clear this chat's context",
             "/stop — abort the running task",
+            "/schedules — list reminders and repeating tasks",
+            "/unschedule <name> — cancel one",
             "/model — show the active model",
             "/status — sandbox and limits",
             "/id — show chat and user IDs",
@@ -147,6 +162,19 @@ async function main(): Promise<void> {
         await ctx.reply("Stopping…");
         await runtime.abort(conversationId);
         log.info("turn stopped", { conversationId });
+        return;
+      }
+      case "schedules":
+        await ctx.reply(await runtime.schedules(conversationId));
+        return;
+      case "unschedule": {
+        const name = text.split(/\s+/)[1];
+        if (!name) {
+          await ctx.reply("Usage: /unschedule <name>");
+          return;
+        }
+        const cancelled = await runtime.cancelSchedule(conversationId, name);
+        await ctx.reply(cancelled ? `Cancelled "${name}".` : `No schedule named "${name}".`);
         return;
       }
       case "model":
@@ -177,6 +205,9 @@ async function main(): Promise<void> {
     }
   }
 
+  /** Chats whose turn this process started and has not finished. */
+  const activeTurns = new Set<string>();
+
   async function handlePrompt(
     ctx: Context,
     telegramUserId: string,
@@ -196,32 +227,57 @@ async function main(): Promise<void> {
       return;
     }
 
-    // A run is already going in this chat: steer it instead of queueing.
-    if (runtime.isBusy(conversationId)) {
-      const accepted = await runtime.steer(conversationId, prompt);
+    // A run is already going in this chat: steer it instead of blocking.
+    if (activeTurns.has(conversationId) || runtime.isBusy(conversationId)) {
+      const accepted = await runtime.steer(
+        conversationId,
+        prompt,
+        `telegram:${ctx.update.update_id}`,
+        ctx.message?.message_id,
+      );
       log.info("steering message", { telegramUserId, chatId: conversationId, accepted });
       await ctx
         .reply(
           accepted
-            ? "Added to the running task — the agent will pick it up at its next step."
+            ? "Queued — the agent will get to it at its next step."
             : "The run is finishing; send that again in a moment.",
         )
         .catch(() => undefined);
       return;
     }
 
+    // grammY handles updates one at a time and awaits each handler, so awaiting the
+    // whole turn here would make later messages wait in the polling loop instead of
+    // steering. Start it, return, and let the next update through.
+    activeTurns.add(conversationId);
+    void runTurn(ctx, conversationId, prompt, telegramUserId)
+      .catch((error: unknown) => log.error("turn crashed", { conversationId, error }))
+      .finally(() => activeTurns.delete(conversationId));
+  }
+
+  async function runTurn(
+    ctx: Context,
+    conversationId: string,
+    prompt: string,
+    telegramUserId: string,
+  ): Promise<void> {
     const stopTyping = startTyping(ctx);
     const startedAt = Date.now();
     let acknowledged = false;
     const acknowledge = () => {
       if (acknowledged) return;
       acknowledged = true;
-      void ctx.reply(ackText(prompt)).catch(() => undefined);
+      void ctx.reply(ACK_TEXT).catch(() => undefined);
     };
     const ackTimer = setTimeout(acknowledge, ACK_DELAY_MS);
 
     try {
-      const text = await runtime.run(ctx, conversationId, prompt, acknowledge);
+      const text = await runtime.run(
+        ctx,
+        conversationId,
+        prompt,
+        `telegram:${ctx.update.update_id}`,
+      );
       // Success is delivered by the conversation watcher; only failures come back here.
       if (text) await replyInChunks(ctx, text);
       log.info("turn complete", {
