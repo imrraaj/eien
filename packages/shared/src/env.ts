@@ -36,6 +36,7 @@ const telegramUserIds = z
 export const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  STATE_DIR: textWithDefault("state"),
 
   TEMPORAL_ADDRESS: textWithDefault("localhost:7233"),
   TEMPORAL_NAMESPACE: textWithDefault("default"),
@@ -69,10 +70,6 @@ export const envSchema = z.object({
   MAX_AGENT_STEPS: z.preprocess(
     emptyToUndefined,
     z.coerce.number().int().min(1).max(100).default(100),
-  ),
-  MAX_CONCURRENT_WORKERS: z.preprocess(
-    emptyToUndefined,
-    z.coerce.number().int().min(1).max(16).default(3),
   ),
 
   GOOGLE_CLI_BIN: optionalNonEmpty,

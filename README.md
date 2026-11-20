@@ -1,8 +1,9 @@
 # eien — always-on coding agent
 
-A personal coding agent reachable over Telegram. The current MVP uses **pi-ai**
-(the SDK under Pi) for the model/tool loop and grammY for Telegram. Tools run
-inside the `sbx` sandbox VM: `bash`, `read`, `write`, `edit`.
+A personal coding agent reachable over Telegram. It uses **pi-durable** for the
+durable turn/tool loop and grammY for Telegram. Tools run inside the `sbx`
+sandbox VM: `bash`, `read`, `write`, `edit`, `web_search`, `web_fetch`,
+`send_file`, `spawn_agent`.
 
 See [`always-on-agent-plan.md`](./always-on-agent-plan.md) for the full design.
 Temporal orchestration is intentionally deferred.
@@ -12,15 +13,17 @@ Temporal orchestration is intentionally deferred.
 - [x] Docker Compose: Postgres, Temporal, Temporal UI, admin tools
 - [x] Sandbox `agent-1` with scoped egress, git identity, `/work`
 - [x] pi-ai client for any OpenAI-compatible endpoint
-- [x] Telegram bot with allowlist, per-user history, `/reset`, `/model`, `/status`
+- [x] Telegram bot with allowlist, `/reset`, `/stop`, `/model`, `/status`
 - [x] Works in groups when mentioned (`@botname ...`) or replied to
 - [x] Sandbox coding tools (`bash`, `read`, `write`, `edit`), path-confined to `/work`
 - [x] Web tools (`web_search`, `web_fetch`) via Exa's keyless hosted MCP
 - [x] File exchange: receive Telegram attachments into `/work/uploads`, send results with `send_file`
 - [x] Markdown replies rendered as Telegram HTML (bold, code, links, quotes, tables)
-- [x] `spawn_agent` workers keep noisy work out of the main context
-- [ ] Durable workflows, child workers, schedules (next: Temporal)
-- [ ] Postgres transcripts and memory
+- [x] `spawn_agent` workers are owned child conversations
+- [x] Durable conversations and runs in JSONL storage (`state/harness`)
+- [x] Native steering: messages sent mid-run land after the current tool round
+- [ ] Schedules and cron jobs (next)
+- [ ] Postgres storage backend
 
 ## Quick start
 
@@ -49,9 +52,8 @@ headers are only added for openrouter.ai.
 Commands: `/reset`, `/stop`, `/model`, `/status`, `/help`. The bot uses long
 polling, so no inbound ports are needed.
 
-`/stop` aborts the running turn, kills processes started under `/work`, and asks
-the model for a short no-tools report of what was completed and where the output
-is. Completed files are left in place.
+`/stop` aborts the running turn and kills processes started under `/work`.
+Completed files are left in place.
 
 ### Users
 
@@ -66,28 +68,23 @@ Restart the bot after editing. Anyone not in the list is ignored. All allowed
 users share the same sandbox and `/work`, but each private chat has its own
 history; groups share one history per group chat.
 
-History is **in memory only**: the last 40 messages (or ~48 K characters) per
-conversation, lost on restart, cleared by `/reset`. Postgres-backed history is
-the planned next step.
+History is **durable**: each chat maps to a conversation in `state/harness`
+(JSONL), so it survives restarts. `/reset` starts a fresh context. `state/` is
+local runtime data and is not committed.
 
 ### Long tasks
 
-One message may use up to `MAX_AGENT_STEPS` model steps (default and hard cap
-100, each step may batch several tool calls). Single bash commands may run up to
-15 minutes. At the limit the bot asks the model for a no-tools summary rather
-than stopping silently; send any follow-up message to continue. Turns are still
-synchronous, so a very long task keeps one "typing" indicator going until it
-finishes or the process restarts.
+One run may use up to `MAX_AGENT_STEPS` model turns (default and hard cap 100).
+Single bash commands may run up to 15 minutes. A run interrupted by a restart
+resumes from its last committed step.
 
-If a turn is still running after ~10 seconds (or starts using tools after 3
-seconds), the bot first posts a short `On it — …` acknowledgement quoting the
-request, so slow work is visible. Fast replies skip the acknowledgement.
+If a run is still going after ~10 seconds, the bot first posts a short
+`On it — …` acknowledgement quoting the request. Fast replies skip it.
 
-Messages sent while a turn is running are **not** queued behind it: they are
-folded into the running turn at its next model step, and the bot replies
-"Added to the running task". That means you can correct course or add detail
-without waiting for the whole task. A long single tool call (up to 15 minutes)
-still has to finish before the message is read.
+Messages sent while a run is running are **steers**: pi-durable queues them and
+places them after the current tool round, then the agent continues with your
+correction. The bot replies "Added to the running task". A long single tool call
+still has to finish before the steer is read.
 
 ### Groups
 
@@ -117,11 +114,11 @@ the bot in BotFather (`/setprivacy`).
 
 ### Subagents
 
-`spawn_agent` runs a nested turn with the same workspace and tools (minus
-`spawn_agent` itself) and returns only a short final report. That keeps noisy
-exploration, big builds, and mass file work out of the main context. Workers run
-up to `MAX_CONCURRENT_WORKERS` at once (default 3), share the sandbox, and are
-aborted by `/stop`. Give parallel workers separate directories.
+`spawn_agent` creates an owned child conversation with the same workspace and
+tools (minus `spawn_agent` itself) and returns only its final report. That keeps
+noisy exploration, big builds, and mass file work out of the main context.
+Workers share the sandbox and are aborted with the parent by `/stop`. Give
+parallel workers separate directories.
 
 Incoming photos, videos, audio, voice notes, and documents are downloaded into
 `/work/uploads` and referenced in the prompt, so the agent can transcode or
@@ -157,7 +154,7 @@ packages/shared/              env schema, logger
 packages/llm/                 pi-ai client, provider-agnostic
 packages/sandbox/             sbx exec + file helpers, path confinement
 packages/tools/               tool schemas and dispatcher
-packages/gateway/             grammY bot, in-memory history, agent turn loop
+packages/gateway/             grammY bot, pi-durable runtime (harness.ts), prompt
 sandbox/                      sbx bootstrap + network policy
 ```
 
