@@ -1,18 +1,23 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
+  AssistantEntry,
   Harness,
+  LiveDoc,
   configure,
   createRegistry,
+  defineDoc,
   defineExtension,
+  defineTask,
   defineTool,
   type Conversation,
   type ConversationId,
   type EntryId,
   type Extension,
+  type TaskId,
   type ToolExecutionResult,
 } from "@earendil-works/pi-durable";
 import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
-import { num, obj, opt, str } from "@earendil-works/pi-schema";
+import { bool, num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import { createModelsRegistry } from "@eien/llm";
 import type { Env, Logger } from "@eien/shared";
 import {
@@ -35,26 +40,142 @@ const CHORD = BACKGROUND_CONTEXT;
 export interface RuntimeOptions {
   env: Env;
   modelId: string;
+  modelProvider?: string;
   models: ReturnType<typeof createModelsRegistry>;
   system: string;
   storageDir: string;
   chatMapPath: string;
   sandbox: SandboxConfig;
   log: Logger;
+  /** Deliver an agent answer to a chat. */
+  onAnswer: (chatId: string, text: string) => Promise<void>;
 }
 
 export interface AgentRuntime {
-  run(
-    ctx: Context,
-    chatId: string,
-    text: string,
-    onProgress?: () => void,
-  ): Promise<string>;
+  run(ctx: Context, chatId: string, text: string, onProgress?: () => void): Promise<string>;
   steer(chatId: string, text: string): Promise<boolean>;
   abort(chatId: string): Promise<void>;
   reset(chatId: string): Promise<void>;
   isBusy(chatId: string): boolean;
 }
+
+type SubagentRecord = {
+  conversationId: ConversationId;
+  reported: EntryId[];
+};
+
+const Subagents = defineDoc<{
+  agents: Record<string, SubagentRecord>;
+  reporters: Record<string, TaskId>;
+}>({
+  checkpointWhen: () => false,
+  kind: "eien.subagents",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "initial",
+  initial: () => ({ agents: {}, reporters: {} }),
+});
+
+/** Background boundary so a subagent outlives the turn that spawned it. */
+const Anchor = defineTask<null, { phase: "done" }, null>({
+  name: "eien.subagent-anchor",
+  version: 1,
+  initial: () => ({ phase: "done" }),
+  phases: {
+    done: (_input, runtime, context) =>
+      runtime.commit(
+        () => ({ status: "terminal", outcome: { status: "completed", result: null } }),
+        context,
+      ),
+  },
+  abort: (_input, runtime, context) =>
+    runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
+});
+
+type ReporterInput = {
+  name: string;
+  conversationId: ConversationId;
+  message: string;
+  followUp: boolean;
+};
+type ReporterState = { phase: "deliver" } | { phase: "report"; report?: string };
+
+/** Deliver one message to a subagent and report its answer back to the main agent. */
+const Reporter = defineTask<ReporterInput, ReporterState, null>({
+  name: "eien.subagent-reporter",
+  version: 1,
+  initial: () => ({ phase: "deliver" }),
+  phases: {
+    deliver: async (reporter, runtime, context) => {
+      const { name, conversationId, message, followUp } = reporter.input;
+      const subagent = await runtime.conversation(conversationId, context);
+      if (!subagent) throw new Error("subagent conversation is gone");
+
+      const submission = await subagent.submit(
+        {
+          type: "input",
+          content: message,
+          whenBusy: followUp ? "followUp" : "steer",
+          requestId: `subagent:${reporter.id}`,
+        },
+        context,
+      );
+      const settled = await submission.wait(context);
+
+      await runtime.commit(async (tx) => {
+        const next = (report?: string) =>
+          ({ status: "running", checkpoint: { phase: "report", report } }) as const;
+
+        if (settled.status === "unanswered") {
+          return next(
+            settled.reason === "aborted" ? undefined : `[subagent ${name} failed: ${settled.reason}]`,
+          );
+        }
+        if (settled.type !== "input" || settled.answer === undefined) return next();
+
+        const doc = await tx.doc(Subagents, runtime.conversationId);
+        const agent = doc.agents[name];
+        if (!agent || agent.reported.includes(settled.answer)) return next();
+        agent.reported.push(settled.answer);
+
+        const entry = await tx.entry(AssistantEntry, settled.answer);
+        const message = entry?.model?.[0];
+        const parts = Array.isArray(message?.content) ? message.content : [];
+        const text = parts
+          .flatMap((part) => (part.type === "text" ? [part.text] : []))
+          .join("")
+          .trim();
+
+        return next(`[subagent ${name} finished] ${text || "(no report)"}`);
+      }, context);
+    },
+
+    report: async (reporter, runtime, context) => {
+      const report = reporter.state.checkpoint.report;
+      if (report !== undefined) {
+        const main = await runtime.conversation(runtime.conversationId, context);
+        if (main) {
+          await main.submit(
+            {
+              type: "input",
+              content: report,
+              whenBusy: "followUp",
+              requestId: `subagent-report:${reporter.id}`,
+            },
+            context,
+          );
+        }
+      }
+      await runtime.commit(
+        () => ({ status: "terminal", outcome: { status: "completed", result: null } }),
+        context,
+      );
+    },
+  },
+  abort: (_input, runtime, context) =>
+    runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
+});
 
 function textOf(entry: unknown): string {
   const model = (entry as { model?: unknown }).model;
@@ -68,7 +189,7 @@ function textOf(entry: unknown): string {
     .filter(
       (block): block is { type: "text"; text: string } =>
         (block as { type?: string }).type === "text" &&
-        typeof (block as { text?: unknown }).text === "string",
+        typeof (block as { text?: string }).text === "string",
     )
     .map((block) => block.text)
     .join("")
@@ -79,17 +200,15 @@ function toolResult(text: string, isError = false): ToolExecutionResult {
   return { output: [{ type: "text", text }], isError };
 }
 
-/**
- * pi-durable backed runtime: durable turns, native steering, child conversations.
- */
 export async function createAgentRuntime(options: RuntimeOptions): Promise<AgentRuntime> {
   const { env, sandbox, log } = options;
   const contexts = new Map<ConversationId, Context>();
+  const watched = new Set<string>();
 
   await mkdir(options.storageDir, { recursive: true });
   const storage = await openNodeJsonlStorage(options.storageDir, CHORD);
 
-  // ── tools ────────────────────────────────────────────────────────────────
+  // ── sandbox and web tools ────────────────────────────────────────────────
   const bash = defineTool({
     name: "bash",
     description:
@@ -134,17 +253,10 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
 
   const edit = defineTool({
     name: "edit",
-    description:
-      "Replace exactly one occurrence of `old` with `new` in a sandbox file.",
+    description: "Replace exactly one occurrence of `old` with `new` in a sandbox file.",
     parameters: obj({ path: str(), old: str(), new: str() }),
     execute: async (args) => {
-      const result = await editText(
-        sandbox,
-        env.SBX_WORKDIR,
-        args.path,
-        args.old,
-        args.new,
-      );
+      const result = await editText(sandbox, env.SBX_WORKDIR, args.path, args.old, args.new);
       return toolResult(`replaced 1 occurrence at ${result.path}:${result.line}`);
     },
   });
@@ -169,8 +281,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
 
   const webSearch = defineTool({
     name: "web_search",
-    description:
-      "Search the web for current information. Returns titles, URLs, and snippets.",
+    description: "Search the web for current information.",
     parameters: obj({ query: str(), numResults: opt(num()) }),
     execute: async (args) => {
       const result = await runWebTool(
@@ -199,60 +310,106 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
     },
   });
 
-  let spawnExtension: Extension;
-  const spawn = defineTool({
-    name: "spawn_agent",
+  // ── subagents ────────────────────────────────────────────────────────────
+  let subagentExtension: Extension;
+
+  const subagent = defineTool({
+    name: "subagent",
     description:
-      "Delegate a self-contained task to a worker conversation. Only its final report returns to you. Give exact paths and acceptance criteria; give parallel workers separate directories.",
-    parameters: obj({ task: str(), cwd: opt(str()), maxSteps: opt(num()) }),
-    execute: async (args, api, context) => {
-      const childId = await api.commit(async (tx) => {
-        const created = await tx.createConversation({
-          ownership: { kind: "task", taskId: api.taskId },
-        });
-        await configure(tx, created.id, {
-          extensions: { remove: [spawnExtension] },
-          cwd: resolveInRoot(env.SBX_WORKDIR, args.cwd ?? env.SBX_WORKDIR),
-          maxTurns: Math.min(80, Math.max(1, Math.trunc(args.maxSteps ?? 40))),
-        });
-        return created.id;
-      }, context);
+      "Manage persistent background subagents that keep working after your turn ends. Actions: spawn (name, message), send (name, message; followUp: true queues it after its current answer instead of steering), stop (name), status (name or all). Answers are reported back to you as new messages.",
+    parameters: obj({
+      action: oneOf(["spawn", "send", "stop", "status"]),
+      name: opt(str()),
+      message: opt(str()),
+      followUp: opt(bool()),
+    }),
+    replay: "unsafe",
+    execute: async (args, api, callContext) => {
+      const { action, name, message, followUp } = args;
+      const reply = (text: string, conversationId?: ConversationId) => ({
+        output: [{ type: "text" as const, text }],
+        ...(conversationId === undefined || name === undefined
+          ? {}
+          : { details: { name, conversationId } }),
+      });
 
-      const child = await api.conversation(childId, context);
-      if (!child) return toolResult("could not create the worker", true);
+      const registry = (await api.snapshot(Subagents, api.conversationId, callContext)) ?? {
+        agents: {},
+        reporters: {},
+      };
 
-      const parentContext = contexts.get(api.conversationId);
-      if (parentContext) contexts.set(childId, parentContext);
-
-      const submission = await child.submit({ type: "input", content: args.task }, context);
-      const settled = await submission.wait(context);
-
-      if (settled.status !== "done" || settled.answer === undefined) {
-        return toolResult(
-          `worker did not finish (${settled.status}${settled.reason ? `: ${settled.reason}` : ""})`,
-          true,
-        );
+      if (action === "status") {
+        const names = name === undefined ? Object.keys(registry.agents) : [name];
+        const lines: string[] = [];
+        for (const each of names) {
+          const found = Object.hasOwn(registry.agents, each) ? registry.agents[each] : undefined;
+          if (!found) continue;
+          const busy =
+            (await api.snapshot(LiveDoc, found.conversationId, callContext))?.run !== undefined;
+          lines.push(`${each}: ${busy ? "working" : "idle"}`);
+        }
+        return reply(lines.length === 0 ? "No subagents." : lines.join("\n"));
       }
 
-      const entry = await api.commit(
-        (tx) =>
-          (tx as unknown as { entry(id: EntryId): Promise<unknown> }).entry(
-            settled.answer as EntryId,
-          ),
-        context,
-      );
-      return toolResult(textOf(entry) || "(worker returned no text)");
+      if (name === undefined) return reply(`${action} needs a name.`);
+      const agent = Object.hasOwn(registry.agents, name) ? registry.agents[name] : undefined;
+      if (action !== "spawn" && !agent) return reply(`No subagent named ${name}.`);
+
+      if (action === "stop") {
+        const target = await api.conversation(agent!.conversationId, callContext);
+        await target?.abort(callContext);
+        return reply(`Stopped ${name}.`, agent!.conversationId);
+      }
+
+      if (message === undefined) return reply(`${action} needs a message.`);
+
+      const result = await api.commit(async (tx) => {
+        const state = await tx.doc(Subagents, api.conversationId);
+        const background = { ownership: { kind: "conversation" }, background: true } as const;
+
+        if (action === "spawn") {
+          if (Object.hasOwn(state.agents, name)) return `${name} already exists; use send.`;
+          const anchor = await tx.createTask(Anchor, null, background);
+          const child = await tx.createConversation({
+            ownership: { kind: "task", taskId: anchor },
+          });
+          await configure(tx, child.id, {
+            extensions: { remove: [subagentExtension] },
+            instructions: `You are the subagent "${name}". Work autonomously and answer the main agent's requests with a concise report.`,
+          });
+          state.agents[name] = { conversationId: child.id, reported: [] };
+        }
+
+        const conversationId = state.agents[name]!.conversationId;
+        const input = {
+          name,
+          conversationId,
+          message,
+          followUp: action === "send" && followUp === true,
+        };
+        state.reporters[api.taskId] = await tx.createTask(Reporter, input, background);
+        return action === "send" ? `Sent to ${name}.` : `Started ${name}.`;
+      }, callContext);
+
+      const current = (await api.snapshot(Subagents, api.conversationId, callContext))?.agents[name];
+      return reply(result, current?.conversationId);
     },
+  });
+
+  subagentExtension = defineExtension({
+    name: "eien-subagents",
+    tasks: [Anchor, Reporter],
+    tools: [subagent],
   });
 
   const toolsExtension = defineExtension({
     name: "eien-tools",
-    tools: [bash, read, write, edit, sendFile, webSearch, webFetch, spawn],
+    tools: [bash, read, write, edit, sendFile, webSearch, webFetch],
   });
-  spawnExtension = toolsExtension;
 
   const registry = createRegistry();
   registry.install(toolsExtension);
+  registry.install(subagentExtension);
 
   const harness = await Harness.open(
     storage,
@@ -268,10 +425,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
   await mkdir(dirname(options.chatMapPath), { recursive: true });
   const chatMap = new Map<string, number>();
   try {
-    const saved = JSON.parse(await readFile(options.chatMapPath, "utf8")) as Record<
-      string,
-      number
-    >;
+    const saved = JSON.parse(await readFile(options.chatMapPath, "utf8")) as Record<string, number>;
     for (const [chat, conversation] of Object.entries(saved)) chatMap.set(chat, conversation);
   } catch {
     // First run.
@@ -281,10 +435,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
   const saveMap = () => {
     saving = saving
       .then(() =>
-        writeFile(
-          options.chatMapPath,
-          JSON.stringify(Object.fromEntries(chatMap), null, 2),
-        ),
+        writeFile(options.chatMapPath, JSON.stringify(Object.fromEntries(chatMap), null, 2)),
       )
       .catch((error: unknown) => log.warn("could not save chat map", { error }));
     return saving;
@@ -292,19 +443,59 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
 
   const busy = new Set<string>();
 
+  /**
+   * Forward finished answers to Telegram. This is also how a background subagent's
+   * report reaches the chat after its follow-up run answers.
+   */
+  async function watchConversation(conversation: Conversation, chatId: string): Promise<void> {
+    if (watched.has(chatId)) return;
+    watched.add(chatId);
+
+    const watch = await conversation.watch(CHORD);
+    let newest = watch.value.entries.at(-1)?.id ?? 0;
+
+    watch.start(async (call) => {
+      if (call.kind !== "value") return;
+
+      for (const entry of call.value.entries) {
+        if (entry.id <= newest) continue;
+        newest = entry.id;
+        if (entry.kind !== "pi.assistant") continue;
+
+        const message = entry.model?.[0];
+        const content = Array.isArray(message?.content) ? message.content : [];
+        // Text emitted alongside a tool call is progress chatter, not an answer.
+        if (content.some((block) => block.type === "toolCall")) continue;
+
+        const text = textOf(entry);
+        if (!text) continue;
+
+        await options.onAnswer(chatId, text).catch((error: unknown) => {
+          log.error("could not deliver answer", { chatId, error });
+        });
+      }
+    });
+  }
+
   async function conversationFor(chatId: string): Promise<Conversation> {
     const existing = chatMap.get(chatId);
-    if (existing) {
-      const conversation = await harness.conversation(existing as unknown as ConversationId, CHORD);
-      if (conversation) return conversation;
+    if (existing !== undefined) {
+      const conversation = await harness.conversation(
+        existing as unknown as ConversationId,
+        CHORD,
+      );
+      if (conversation) {
+        await watchConversation(conversation, chatId);
+        return conversation;
+      }
     }
 
     const conversation = await harness.createConversation(
       {
         ownership: { kind: "ownerless" },
         agent: {
-          model: { provider: "eien", modelId: options.modelId },
-          extensions: [toolsExtension],
+          model: { provider: options.modelProvider ?? "eien", modelId: options.modelId },
+          extensions: [toolsExtension, subagentExtension],
           instructions: options.system,
           cwd: env.SBX_WORKDIR,
           maxTurns: env.MAX_AGENT_STEPS,
@@ -315,16 +506,21 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
 
     chatMap.set(chatId, conversation.id as unknown as number);
     await saveMap();
+    await watchConversation(conversation, chatId);
     return conversation;
   }
 
-  async function answerFor(
-    conversation: Conversation,
-    answerId: EntryId,
-  ): Promise<string> {
-    const entry = await conversation.commit((tx) => tx.entry(answerId), CHORD);
-    return textOf(entry);
+  // Reattach watchers for every known chat and let pending durable work run
+  // again after a restart (sleeps, reporters, interrupted generations).
+  for (const [chatId, conversationId] of chatMap) {
+    const conversation = await harness.conversation(
+      conversationId as unknown as ConversationId,
+      CHORD,
+    );
+    if (conversation) await watchConversation(conversation, chatId);
   }
+  harness.resume();
+  log.info("durable runtime ready", { chats: chatMap.size });
 
   return {
     isBusy: (chatId) => busy.has(chatId),
@@ -337,15 +533,11 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
       const timer = onProgress ? setTimeout(onProgress, 10_000) : undefined;
 
       try {
-        const submission = await conversation.submit(
-          { type: "input", content: text },
-          CHORD,
-        );
+        const submission = await conversation.submit({ type: "input", content: text }, CHORD);
         const settled = await submission.wait(CHORD);
 
-        if (settled.status === "done" && settled.answer !== undefined) {
-          return answerFor(conversation, settled.answer);
-        }
+        // The watcher delivers the answer; only failures need a direct reply.
+        if (settled.status === "done") return "";
 
         return settled.reason === "turn_limit"
           ? "Hit the step limit. Send another message to continue."

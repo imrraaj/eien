@@ -19,7 +19,7 @@ Temporal orchestration is intentionally deferred.
 - [x] Web tools (`web_search`, `web_fetch`) via Exa's keyless hosted MCP
 - [x] File exchange: receive Telegram attachments into `/work/uploads`, send results with `send_file`
 - [x] Markdown replies rendered as Telegram HTML (bold, code, links, quotes, tables)
-- [x] `spawn_agent` workers are owned child conversations
+- [x] `subagent` workers are owned background conversations that report back
 - [x] Durable conversations and runs in JSONL storage (`state/harness`)
 - [x] Native steering: messages sent mid-run land after the current tool round
 - [ ] Schedules and cron jobs (next)
@@ -110,15 +110,25 @@ the bot in BotFather (`/setprivacy`).
 | `send_file` | host + sandbox | Upload a workspace file to the chat (≤50 MB) |
 | `web_search` | host | Current information via Exa MCP (keyless) |
 | `web_fetch` | host | Read a URL as markdown/text |
-| `spawn_agent` | host + sandbox | Delegate a self-contained task to a worker; only its report returns |
+| `subagent` | host + sandbox | Spawn/steer/stop persistent background workers |
 
 ### Subagents
 
-`spawn_agent` creates an owned child conversation with the same workspace and
-tools (minus `spawn_agent` itself) and returns only its final report. That keeps
-noisy exploration, big builds, and mass file work out of the main context.
-Workers share the sandbox and are aborted with the parent by `/stop`. Give
+The `subagent` tool manages **persistent background workers**; it never blocks
+the current turn.
+
+| Action | Effect |
+|---|---|
+| `spawn` (name, message) | creates a child conversation + background reporter, returns at once |
+| `send` (name, message) | steers a working worker, or `followUp: true` for after its current answer |
+| `stop` (name) | aborts that worker's current run |
+| `status` (name?) | working / idle |
+
+When a worker finishes, a durable reporter posts its answer back into the main
+conversation as a follow-up message; the main agent then replies to the user.
+Workers survive restarts and are separate from the parent's step budget. Give
 parallel workers separate directories.
+
 
 Incoming photos, videos, audio, voice notes, and documents are downloaded into
 `/work/uploads` and referenced in the prompt, so the agent can transcode or

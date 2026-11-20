@@ -34,17 +34,25 @@ function startTyping(ctx: Context): () => void {
   return () => clearInterval(timer);
 }
 
-async function replyInChunks(ctx: Context, text: string): Promise<void> {
+async function sendInChunks(
+  api: Context["api"],
+  chatId: number | string,
+  text: string,
+): Promise<void> {
   for (const chunk of toTelegramChunks(text, TELEGRAM_CHUNK_LIMIT)) {
     try {
-      await ctx.reply(chunk, { parse_mode: "HTML" });
+      await api.sendMessage(chatId, chunk, { parse_mode: "HTML" });
     } catch {
       // Telegram rejected the markup: resend as readable plain text.
       for (const plain of splitMessage(htmlToPlainText(chunk))) {
-        await ctx.reply(plain);
+        await api.sendMessage(chatId, plain);
       }
     }
   }
+}
+
+async function replyInChunks(ctx: Context, text: string): Promise<void> {
+  if (ctx.chat) await sendInChunks(ctx.api, ctx.chat.id, text);
 }
 
 async function main(): Promise<void> {
@@ -82,6 +90,7 @@ async function main(): Promise<void> {
     chatMapPath: `${env.STATE_DIR}/chats.json`,
     sandbox,
     log,
+    onAnswer: (chatId, text) => sendInChunks(bot.api, chatId, text),
   });
 
   const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
@@ -213,7 +222,8 @@ async function main(): Promise<void> {
 
     try {
       const text = await runtime.run(ctx, conversationId, prompt, acknowledge);
-      await replyInChunks(ctx, text || "(the model returned no text)");
+      // Success is delivered by the conversation watcher; only failures come back here.
+      if (text) await replyInChunks(ctx, text);
       log.info("turn complete", {
         telegramUserId,
         chatId: conversationId,
