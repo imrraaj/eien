@@ -18,8 +18,14 @@ function sandbox(reply: (command: string) => ExecResult): Sandbox & { copiedIn: 
     root: "/work",
     copiedIn,
     exec: async (command) => reply(command),
-    copyIn: async (_local, remote) => void copiedIn.push(remote),
-    copyOut: async (_remote, local) => writeFile(local, "data"),
+    copyIn: async (_local, remote) => {
+      copiedIn.push(remote);
+      return Result.ok(undefined);
+    },
+    copyOut: async (_remote, local) => {
+      await writeFile(local, "data");
+      return Result.ok(undefined);
+    },
   };
 }
 

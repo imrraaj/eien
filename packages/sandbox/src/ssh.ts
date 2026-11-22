@@ -1,3 +1,5 @@
+import type { Result } from "better-result";
+import type { CommandFailed } from "./errors.ts";
 import { runCopy, runProcess, shellQuote } from "./process.ts";
 import type { CopyOptions, ExecOptions, ExecResult, Sandbox, SshOptions } from "./types.ts";
 
@@ -93,11 +95,11 @@ export class SshSandbox implements Sandbox {
     );
   }
 
-  copyIn(localPath: string, remotePath: string, options?: CopyOptions): Promise<void> {
+  copyIn(localPath: string, remotePath: string, options?: CopyOptions): Promise<Result<void, CommandFailed>> {
     return runCopy("scp", [...scpArgs(this.ssh), localPath, sshRemote(this.ssh, remotePath)], options);
   }
 
-  copyOut(remotePath: string, localPath: string, options?: CopyOptions): Promise<void> {
+  copyOut(remotePath: string, localPath: string, options?: CopyOptions): Promise<Result<void, CommandFailed>> {
     return runCopy("scp", [...scpArgs(this.ssh), sshRemote(this.ssh, remotePath), localPath], options);
   }
 }

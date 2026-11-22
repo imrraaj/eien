@@ -139,13 +139,12 @@ export function createTelegramService(options: TelegramOptions): TelegramService
       const text = addressedText(ctx, ctx.message.caption ?? "", ctx.message.caption_entities);
       if (text === undefined) return;
 
-      let attachment;
-      try {
-        attachment = await downloadAttachment(ctx, token);
-      } catch (error) {
-        await ctx.reply(`Could not receive that file: ${errorText(error).slice(0, 500)}`).catch(() => undefined);
+      const downloaded = await downloadAttachment(ctx, token);
+      if (downloaded.isErr()) {
+        await ctx.reply(`Could not receive that file: ${downloaded.error.message.slice(0, 500)}`).catch(() => undefined);
         return;
       }
+      const attachment = downloaded.value;
       if (!attachment) {
         await ctx.reply("Unsupported attachment type.");
         return;

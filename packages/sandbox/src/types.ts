@@ -1,3 +1,6 @@
+import type { Result } from "better-result";
+import type { CommandFailed } from "./errors.ts";
+
 /** Transport-agnostic view of the sandbox the agent works in. */
 
 export interface ExecOptions {
@@ -41,9 +44,9 @@ export interface Sandbox {
   readonly root: string;
   exec(command: string, options?: ExecOptions): Promise<ExecResult>;
   /** Copy a host file into the sandbox. */
-  copyIn(localPath: string, remotePath: string, options?: CopyOptions): Promise<void>;
+  copyIn(localPath: string, remotePath: string, options?: CopyOptions): Promise<Result<void, CommandFailed>>;
   /** Copy a sandbox file to the host. */
-  copyOut(remotePath: string, localPath: string, options?: CopyOptions): Promise<void>;
+  copyOut(remotePath: string, localPath: string, options?: CopyOptions): Promise<Result<void, CommandFailed>>;
 }
 
 export interface SshOptions {

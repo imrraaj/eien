@@ -1,9 +1,13 @@
 import type { Attachment } from "@eien/io";
+import { Result, TaggedError } from "better-result";
 import type { Context } from "grammy";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+/** The attachment could not be fetched from Telegram. */
+export class DownloadFailed extends TaggedError("DownloadFailed")<{ message: string; cause?: unknown }> {}
 
 /** Bot API downloads stop at 20 MB. */
 const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
@@ -69,22 +73,32 @@ function fileRef(ctx: Context): FileRef | undefined {
   return undefined;
 }
 
-/** Download the message's attachment to a host temp file. Undefined when it has none. */
-export async function downloadAttachment(ctx: Context, token: string): Promise<Attachment | undefined> {
-  const ref = fileRef(ctx);
-  if (!ref) return undefined;
-  if (ref.size !== undefined && ref.size > MAX_DOWNLOAD_BYTES) {
-    throw new Error("Telegram only lets bots download files up to 20 MB");
-  }
+/** Download the message's attachment to a host temp file. `undefined` when it has none. */
+export function downloadAttachment(ctx: Context, token: string): Promise<Result<Attachment | undefined, DownloadFailed>> {
+  return Result.gen(async function* () {
+    const ref = fileRef(ctx);
+    if (!ref) return Result.ok(undefined);
+    if (ref.size !== undefined && ref.size > MAX_DOWNLOAD_BYTES) {
+      yield* new DownloadFailed({ message: "Telegram only lets bots download files up to 20 MB" });
+    }
 
-  const file = await ctx.api.getFile(ref.fileId);
-  if (!file.file_path) throw new Error("Telegram did not return a file path");
+    const fail = (message: string) => (cause: unknown) => new DownloadFailed({ message: `${message}: ${String(cause)}`, cause });
+    const file = yield* Result.await(
+      Result.tryPromise({ try: () => ctx.api.getFile(ref.fileId), catch: fail("Telegram refused the file") }),
+    );
+    if (!file.file_path) yield* new DownloadFailed({ message: "Telegram did not return a file path" });
 
-  const response = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
-  if (!response.ok) throw new Error(`download failed (HTTP ${response.status})`);
+    const response = yield* Result.await(
+      Result.tryPromise({
+        try: () => fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`),
+        catch: fail("download failed"),
+      }),
+    );
+    if (!response.ok) yield* new DownloadFailed({ message: `download failed (HTTP ${response.status})` });
 
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  const localPath = join(tmpdir(), `eien-in-${randomUUID()}-${ref.name}`);
-  await writeFile(localPath, bytes);
-  return { localPath, name: ref.name, mime: ref.mime, size: bytes.length };
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const localPath = join(tmpdir(), `eien-in-${randomUUID()}-${ref.name}`);
+    await writeFile(localPath, bytes);
+    return Result.ok({ localPath, name: ref.name, mime: ref.mime, size: bytes.length });
+  });
 }

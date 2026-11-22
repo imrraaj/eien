@@ -36,8 +36,8 @@ const sandbox: Sandbox = {
   name: "fake",
   root: "/work",
   exec: async () => ({ output: "", exitCode: 0, timedOut: false, truncated: false }),
-  copyIn: async () => undefined,
-  copyOut: async () => undefined,
+  copyIn: async () => Result.ok(undefined),
+  copyOut: async () => Result.ok(undefined),
 };
 
 function recordingOutbox() {

@@ -25,7 +25,7 @@ import { Schedule, Schedules, removeSchedule, scheduleInfos, scheduleTool } from
 import { openSqliteStorage } from "./sqlite.ts";
 import { SubagentExtension } from "./subagents.ts";
 import { createWorkTools } from "./tools.ts";
-import { exportFile, intake } from "./transfer.ts";
+import { NoChat, exportFile, intake } from "./transfer.ts";
 
 const CHORD = BACKGROUND_CONTEXT;
 
@@ -93,8 +93,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
 
   async function deliverFile(conversationId: ConversationId, path: string, caption?: string) {
     const to = addresses.get(conversationId);
-    // Only chat conversations have an address; subagents report through their parent.
-    if (!to) return Result.err(new Error("this conversation has no chat to send files to"));
+    if (!to) return Result.err(new NoChat({ message: "this conversation has no chat to send files to" }));
     return exportFile(sandbox, path, caption, (message) => outbox.send(to, message));
   }
 

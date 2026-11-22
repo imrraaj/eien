@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Result } from "better-result";
 import { editText, readText, writeText } from "../../packages/sandbox/src/files.ts";
 import { statSandboxFile } from "../../packages/sandbox/src/copy.ts";
 import type { CopyOptions, ExecOptions, ExecResult, Sandbox } from "../../packages/sandbox/src/types.ts";
@@ -23,8 +24,12 @@ class FakeSandbox implements Sandbox {
     return this.reply(command);
   }
 
-  async copyIn(_local: string, _remote: string, _options?: CopyOptions): Promise<void> {}
-  async copyOut(_remote: string, _local: string, _options?: CopyOptions): Promise<void> {}
+  async copyIn(_local: string, _remote: string, _options?: CopyOptions) {
+    return Result.ok(undefined);
+  }
+  async copyOut(_remote: string, _local: string, _options?: CopyOptions) {
+    return Result.ok(undefined);
+  }
 }
 
 describe("file helpers", () => {

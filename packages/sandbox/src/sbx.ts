@@ -1,3 +1,5 @@
+import type { Result } from "better-result";
+import type { CommandFailed } from "./errors.ts";
 import { runCopy, runProcess } from "./process.ts";
 import type { CopyOptions, ExecOptions, ExecResult, Sandbox } from "./types.ts";
 
@@ -30,11 +32,11 @@ export class SbxSandbox implements Sandbox {
     return runProcess("sbx", sbxExecArgs(this.name, command, cwd), options);
   }
 
-  copyIn(localPath: string, remotePath: string, options?: CopyOptions): Promise<void> {
+  copyIn(localPath: string, remotePath: string, options?: CopyOptions): Promise<Result<void, CommandFailed>> {
     return runCopy("sbx", ["cp", localPath, sbxRemote(this.name, remotePath)], options);
   }
 
-  copyOut(remotePath: string, localPath: string, options?: CopyOptions): Promise<void> {
+  copyOut(remotePath: string, localPath: string, options?: CopyOptions): Promise<Result<void, CommandFailed>> {
     return runCopy("sbx", ["cp", sbxRemote(this.name, remotePath), localPath], options);
   }
 }

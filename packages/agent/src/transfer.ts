@@ -18,6 +18,9 @@ import { basename, join } from "node:path";
 /** `send_file` pointed at something that is not a regular file. */
 export class NotAFile extends TaggedError("NotAFile")<{ path: string; message: string }> {}
 
+/** `send_file` from a conversation no chat owns (subagents report through their parent). */
+export class NoChat extends TaggedError("NoChat")<{ message: string }> {}
+
 /**
  * Copy attachments into `<root>/uploads` and return the message the model sees:
  * the user's text plus a note per file. The host copies are deleted either way.
@@ -36,7 +39,7 @@ export async function intake(
       const notes: string[] = [];
       for (const file of attachments) {
         const remote = `${dir}/${Date.now().toString(36)}-${file.name}`;
-        await sandbox.copyIn(file.localPath, remote);
+        yield* Result.await(sandbox.copyIn(file.localPath, remote));
         notes.push(`[attached file saved in the sandbox: ${remote} (${file.name}, ${file.mime}, ${formatBytes(file.size)})]`);
       }
       return Result.ok([text || "The user sent this without instructions.", ...notes].join("\n\n"));
@@ -64,7 +67,7 @@ export function exportFile(
     try {
       const name = basename(remotePath) || "file";
       const localPath = join(dir, name);
-      await sandbox.copyOut(remotePath, localPath);
+      yield* Result.await(sandbox.copyOut(remotePath, localPath));
       yield* Result.await(send({ kind: "file", localPath, name, size: info.size, caption }));
       return Result.ok(`sent ${name} (${formatBytes(info.size)}) to the chat`);
     } finally {

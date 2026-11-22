@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { Result } from "better-result";
+import { commandFailed, type CommandFailed } from "./errors.ts";
 import type { CopyOptions, ExecOptions, ExecResult } from "./types.ts";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -93,12 +95,15 @@ export function runProcess(
   });
 }
 
-/** Run a copy command, surfacing stderr when it fails. */
+/**
+ * Run a copy command. A non-zero exit is `CommandFailed` carrying stderr; failing
+ * to start the binary at all is a broken install and rejects.
+ */
 export function runCopy(
   bin: string,
   args: string[],
   options: CopyOptions = {},
-): Promise<void> {
+): Promise<Result<void, CommandFailed>> {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { stdio: ["ignore", "ignore", "pipe"] });
 
@@ -124,8 +129,7 @@ export function runCopy(
 
     child.on("close", (code) => {
       cleanup();
-      if (code === 0) resolve();
-      else reject(new Error(stderr.trim() || `${bin} failed with exit ${code}`));
+      resolve(code === 0 ? Result.ok(undefined) : Result.err(commandFailed(code ?? 1, stderr, `${bin} failed`)));
     });
   });
 }
