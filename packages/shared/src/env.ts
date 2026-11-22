@@ -61,6 +61,8 @@ export const envSchema = z.object({
   MODEL_WORKER: optionalNonEmpty,
   MODEL_CHEAP: optionalNonEmpty,
   SYSTEM_PROMPT: optionalNonEmpty,
+  /** Persona file; defaults to the SOUL.md shipped with @eien/agent. */
+  SOUL_PATH: optionalNonEmpty,
 
   TELEGRAM_BOT_TOKEN: optionalNonEmpty,
   ALLOWED_TELEGRAM_USER_IDS: telegramUserIds,

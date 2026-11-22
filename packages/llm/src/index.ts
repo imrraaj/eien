@@ -11,7 +11,7 @@ import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completio
 
 export type ModelKind = "main" | "worker" | "cheap";
 
-const PROVIDER_ID = "eien";
+export const PROVIDER_ID = "eien";
 
 const MODEL_ENV_VAR: Record<ModelKind, string> = {
   main: "MODEL_MAIN",

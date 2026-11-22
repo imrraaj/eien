@@ -47,7 +47,7 @@ function preview(prompt: string): string {
   return line.length > PREVIEW ? `${line.slice(0, PREVIEW - 1).trimEnd()}…` : line;
 }
 
-/** One line per schedule: `name — in 12m, every 15m — prompt preview`. */
+/** One line per schedule: `name: in 12m, every 15m. prompt preview`. */
 export function formatSchedules(items: ScheduleInfo[], now: number): string {
   if (items.length === 0) return "No schedules.";
 
@@ -56,7 +56,7 @@ export function formatSchedules(items: ScheduleInfo[], now: number): string {
     .map((item) => {
       const when = item.nextAt <= now ? "due now" : `in ${formatDuration(item.nextAt - now)}`;
       const every = item.everyMs === undefined ? "" : `, every ${formatDuration(item.everyMs)}`;
-      return `${item.name} — ${when}${every} — ${preview(item.prompt)}`;
+      return `${item.name}: ${when}${every}. ${preview(item.prompt)}`;
     })
     .join("\n");
 }

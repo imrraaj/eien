@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatDuration, formatSchedules, parseDelay } from "../../packages/gateway/src/schedule.ts";
+import { formatDuration, formatSchedules, parseDelay } from "../../packages/agent/src/schedule-text.ts";
 
 describe("parseDelay", () => {
   test("parses seconds, minutes, hours, days", () => {
@@ -51,8 +51,8 @@ describe("formatSchedules", () => {
       now,
     );
     expect(text.split("\n")).toEqual([
-      "joke — in 1m — tell me a joke",
-      "later — in 1h, every 15m — check the build",
+      "joke: in 1m. tell me a joke",
+      "later: in 1h, every 15m. check the build",
     ]);
   });
 

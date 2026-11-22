@@ -1,4 +1,5 @@
 export { envSchema, loadEnv, type Env } from "./env.ts";
+export { formatBytes } from "./format.ts";
 export {
   createLogger,
   LOG_LEVELS,
