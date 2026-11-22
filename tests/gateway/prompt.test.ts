@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { defaultSystemPrompt } from "./prompt.ts";
+import { defaultSystemPrompt } from "../../packages/gateway/src/prompt.ts";
 
 describe("defaultSystemPrompt", () => {
   test("includes the sandbox and workspace", () => {

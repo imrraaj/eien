@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { resolveInRoot } from "./paths.ts";
+import { resolveInRoot } from "../../packages/sandbox/src/paths.ts";
 
 describe("resolveInRoot", () => {
   test("resolves relative paths against the root", () => {

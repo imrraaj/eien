@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { sbxExecArgs, sbxRemote } from "./sbx.ts";
-import { scpArgs, sshArgs, sshCommand, sshRemote, sshScript } from "./ssh.ts";
-import type { SshOptions } from "./types.ts";
+import { sbxExecArgs, sbxRemote } from "../../packages/sandbox/src/sbx.ts";
+import { scpArgs, sshArgs, sshCommand, sshRemote, sshScript } from "../../packages/sandbox/src/ssh.ts";
+import type { SshOptions } from "../../packages/sandbox/src/types.ts";
 
 const ssh: SshOptions = {
   host: "sandbox",

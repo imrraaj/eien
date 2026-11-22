@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { htmlToPlainText, renderInline, toTelegramChunks } from "./markdown.ts";
+import { htmlToPlainText, renderInline, toTelegramChunks } from "../../packages/gateway/src/markdown.ts";
 
 describe("renderInline", () => {
   test("renders bold, italic, strike, and inline code", () => {

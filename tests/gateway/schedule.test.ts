@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatDuration, formatSchedules, parseDelay } from "./schedule.ts";
+import { formatDuration, formatSchedules, parseDelay } from "../../packages/gateway/src/schedule.ts";
 
 describe("parseDelay", () => {
   test("parses seconds, minutes, hours, days", () => {

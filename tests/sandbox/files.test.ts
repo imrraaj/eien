@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { editText, readText, writeText } from "./files.ts";
-import { statSandboxFile } from "./copy.ts";
-import type { CopyOptions, ExecOptions, ExecResult, Sandbox } from "./types.ts";
+import { editText, readText, writeText } from "../../packages/sandbox/src/files.ts";
+import { statSandboxFile } from "../../packages/sandbox/src/copy.ts";
+import type { CopyOptions, ExecOptions, ExecResult, Sandbox } from "../../packages/sandbox/src/types.ts";
 
 const ok = (output = ""): ExecResult => ({
   output,
