@@ -9,6 +9,7 @@
   "dependencies": {
     "@eien/io": "workspace:*",
     "@eien/shared": "workspace:*",
+    "better-result": "^3.0.1",
     "grammy": "^1.46.0"
   }
 }
