@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Result } from "better-result";
 import { addressKey, parseAddressKey } from "../../packages/io/src/address.ts";
 import { InputHub } from "../../packages/io/src/inputs.ts";
 import { OutputRouter } from "../../packages/io/src/outputs.ts";
@@ -7,7 +8,13 @@ import type { InboundSink, OutboundMessage, OutputService } from "../../packages
 
 function recorder(name: string) {
   const sent: Array<[string, OutboundMessage]> = [];
-  const service: OutputService = { name, send: async (chat, message) => void sent.push([chat, message]) };
+  const service: OutputService = {
+    name,
+    send: async (chat, message) => {
+      sent.push([chat, message]);
+      return Result.ok(undefined);
+    },
+  };
   return { service, sent };
 }
 
@@ -59,7 +66,8 @@ describe("OutputRouter", () => {
     const web = recorder("web");
     router.add(web.service);
     router.remove("web");
-    await expect(router.send({ service: "web", chat: "1" }, { kind: "text", text: "x" })).rejects.toThrow("no output");
+    const sent = await router.send({ service: "web", chat: "1" }, { kind: "text", text: "x" });
+    expect(sent.isErr() && sent.error.reason).toBe("no_service");
   });
 
   test("refuses duplicate names", () => {

@@ -1,3 +1,5 @@
+import { Result } from "better-result";
+import { DeliveryFailed } from "./errors.ts";
 import { scrubDashes } from "./style.ts";
 import type { Address, OutboundMessage, OutputService } from "./types.ts";
 
@@ -18,9 +20,15 @@ export class OutputRouter {
     return this.#services.get(service)?.promptHint;
   }
 
-  send(to: Address, message: OutboundMessage): Promise<void> {
+  send(to: Address, message: OutboundMessage): Promise<Result<void, DeliveryFailed>> {
     const service = this.#services.get(to.service);
-    if (!service) return Promise.reject(new Error(`no output service "${to.service}"`));
+    if (!service) {
+      return Promise.resolve(
+        Result.err(
+          new DeliveryFailed({ service: to.service, reason: "no_service", message: `no output service "${to.service}"` }),
+        ),
+      );
+    }
     return service.send(to.chat, styled(message));
   }
 }

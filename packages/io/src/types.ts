@@ -1,3 +1,6 @@
+import type { Result } from "better-result";
+import type { DeliveryFailed } from "./errors.ts";
+
 /** Where a conversation lives: which service, and which chat inside it. */
 export interface Address {
   readonly service: string;
@@ -52,10 +55,10 @@ export type OutboundMessage =
     }
   | { readonly kind: "status"; readonly status: "working" | "queued" | "idle" };
 
-/** A destination for agent output. Throws when it cannot deliver (for example, a file over its size limit). */
+/** A destination for agent output. Limits it cannot meet come back as `DeliveryFailed`, never as a throw. */
 export interface OutputService {
   readonly name: string;
   /** Guidance added to the system prompt for chats on this service, such as formatting rules. */
   readonly promptHint?: string;
-  send(chat: string, message: OutboundMessage): Promise<void>;
+  send(chat: string, message: OutboundMessage): Promise<Result<void, DeliveryFailed>>;
 }

@@ -1,4 +1,5 @@
-import type { Address, InboundEvent, InboundSink, InputService, OutboundMessage, OutputService } from "@eien/io";
+import { DeliveryFailed, type Address, type InboundEvent, type InboundSink, type InputService, type OutboundMessage, type OutputService } from "@eien/io";
+import { Result } from "better-result";
 import { formatBytes, type Logger } from "@eien/shared";
 import { Bot, InputFile, type Api, type Context } from "grammy";
 import { createReadStream } from "node:fs";
@@ -154,6 +155,24 @@ export function createTelegramService(options: TelegramOptions): TelegramService
     },
   );
 
+  /** Send one message through the Bot API; throws whatever grammY throws. */
+  async function deliver(chat: string, message: OutboundMessage): Promise<void> {
+    switch (message.kind) {
+      case "text":
+        return sendChunks(bot.api, chat, message.text, replyTargets.get(chat));
+      case "file":
+        await bot.api.sendDocument(chat, new InputFile(createReadStream(message.localPath), message.name), {
+          caption: message.caption,
+        });
+        return;
+      case "status":
+        if (message.status === "idle") stopWorking(chat);
+        else startWorking(chat);
+        if (message.status === "queued") await bot.api.sendMessage(chat, QUEUED_TEXT);
+        return;
+    }
+  }
+
   bot.catch((error) => log.error("unhandled bot error", { updateId: error.ctx.update.update_id, error: error.error }));
 
   return {
@@ -184,26 +203,20 @@ export function createTelegramService(options: TelegramOptions): TelegramService
     },
 
     async send(chat: string, message: OutboundMessage) {
-      switch (message.kind) {
-        case "text":
-          await sendChunks(bot.api, chat, message.text, replyTargets.get(chat));
-          return;
-        case "file":
-          if (message.size > MAX_UPLOAD_BYTES) {
-            throw new Error(
-              `file is ${formatBytes(message.size)}; Telegram allows at most ${formatBytes(MAX_UPLOAD_BYTES)}`,
-            );
-          }
-          await bot.api.sendDocument(chat, new InputFile(createReadStream(message.localPath), message.name), {
-            caption: message.caption,
-          });
-          return;
-        case "status":
-          if (message.status === "idle") stopWorking(chat);
-          else startWorking(chat);
-          if (message.status === "queued") await bot.api.sendMessage(chat, QUEUED_TEXT);
-          return;
+      if (message.kind === "file" && message.size > MAX_UPLOAD_BYTES) {
+        return Result.err(
+          new DeliveryFailed({
+            service: "telegram",
+            reason: "too_large",
+            message: `file is ${formatBytes(message.size)}; Telegram allows at most ${formatBytes(MAX_UPLOAD_BYTES)}`,
+          }),
+        );
       }
+      return Result.tryPromise({
+        try: () => deliver(chat, message),
+        catch: (cause) =>
+          new DeliveryFailed({ service: "telegram", reason: "failed", message: `Telegram rejected it: ${errorText(cause)}`, cause }),
+      });
     },
   };
 }
