@@ -155,7 +155,6 @@ async function main(): Promise<void> {
             "Send me a coding task; I will use bash/read/write/edit in the sandbox.",
             "",
             "/reset — clear this chat's context",
-            "/stop — abort the running task",
             "/schedules — list reminders and repeating tasks",
             "/unschedule <name> — cancel one",
             "/model — show the active model",
@@ -169,17 +168,6 @@ async function main(): Promise<void> {
         await runtime.reset(conversationId);
         await ctx.reply("Context cleared.");
         return;
-      case "stop":
-      case "cancel": {
-        if (!runtime.isBusy(conversationId)) {
-          await ctx.reply("Nothing is running right now.");
-          return;
-        }
-        await ctx.reply("Stopping…");
-        await runtime.abort(conversationId);
-        log.info("turn stopped", { conversationId });
-        return;
-      }
       case "schedules":
         await ctx.reply(await runtime.schedules(conversationId));
         return;

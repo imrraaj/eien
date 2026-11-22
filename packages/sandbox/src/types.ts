@@ -28,10 +28,6 @@ export interface RemoteFileInfo {
   size: number;
 }
 
-export interface KillOptions {
-  timeoutMs?: number;
-}
-
 /**
  * Where commands and files go. Implementations own the transport (sbx CLI,
  * ssh/scp, ...); callers never see it.

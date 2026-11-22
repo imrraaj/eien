@@ -23,7 +23,6 @@ import { createModelsRegistry } from "@eien/llm";
 import type { Env, Logger } from "@eien/shared";
 import {
   editText,
-  killSandboxWork,
   readText,
   resolveInRoot,
   writeText,
@@ -55,7 +54,6 @@ export interface RuntimeOptions {
 export interface AgentRuntime {
   run(ctx: Context, chatId: string, text: string, requestId?: string): Promise<string>;
   steer(chatId: string, text: string, requestId?: string, replyTo?: number): Promise<boolean>;
-  abort(chatId: string): Promise<void>;
   reset(chatId: string): Promise<void>;
   isBusy(chatId: string): boolean;
   /** Formatted schedule list for a chat. */
@@ -796,12 +794,6 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
         await conversation.submit({ type: "input", content: text, requestId }, CHORD);
         return true;
       }
-    },
-
-    async abort(chatId) {
-      const conversation = await conversationFor(chatId);
-      await conversation.abort(CHORD).catch(() => undefined);
-      await killSandboxWork(sandbox).catch(() => 0);
     },
 
     async reset(chatId) {
