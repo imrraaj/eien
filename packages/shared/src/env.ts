@@ -38,14 +38,6 @@ export const envSchema = z.object({
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   STATE_DIR: textWithDefault("state"),
 
-  TEMPORAL_ADDRESS: textWithDefault("localhost:7233"),
-  TEMPORAL_NAMESPACE: textWithDefault("default"),
-  TEMPORAL_TASK_QUEUE: textWithDefault("brain"),
-
-  DATABASE_URL: textWithDefault(
-    "postgres://agent:agent@localhost:5432/agent",
-  ),
-
   // Any OpenAI-compatible endpoint. OpenRouter is the default, and the legacy
   // OPENROUTER_* names are still read as fallbacks.
   LLM_BASE_URL: optionalNonEmpty,
@@ -58,8 +50,6 @@ export const envSchema = z.object({
   OPENROUTER_BASE_URL: textWithDefault("https://openrouter.ai/api/v1"),
 
   MODEL_MAIN: optionalNonEmpty,
-  MODEL_WORKER: optionalNonEmpty,
-  MODEL_CHEAP: optionalNonEmpty,
   SYSTEM_PROMPT: optionalNonEmpty,
   /** Persona file; defaults to the SOUL.md shipped with @eien/agent. */
   SOUL_PATH: optionalNonEmpty,
@@ -80,9 +70,6 @@ export const envSchema = z.object({
     emptyToUndefined,
     z.coerce.number().int().min(1).max(100).default(100),
   ),
-
-  GOOGLE_CLI_BIN: optionalNonEmpty,
-  GOOGLE_CLI_CONFIG_DIR: optionalNonEmpty,
 
   EXA_MCP_URL: textWithDefault("https://mcp.exa.ai/mcp"),
   EXA_API_KEY: optionalNonEmpty,

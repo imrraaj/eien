@@ -1,8 +1,0 @@
-# Dev-only Temporal dynamic config (same as the official docker-compose setup).
-# Do not use forceSearchAttributesCacheRefreshOnRead in production.
-limit.maxIDLength:
-  - value: 255
-    constraints: {}
-system.forceSearchAttributesCacheRefreshOnRead:
-  - value: true
-    constraints: {}

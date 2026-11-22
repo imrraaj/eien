@@ -14,7 +14,7 @@ import { addressKey, parseAddressKey, type Address, type Attachment, type Outbou
 import { PROVIDER_ID, type createModelsRegistry } from "@eien/llm";
 import { statSandboxFile, type Sandbox } from "@eien/sandbox";
 import { formatBytes, type Logger } from "@eien/shared";
-import type { WebOptions } from "@eien/tools";
+import type { WebOptions } from "./web.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";

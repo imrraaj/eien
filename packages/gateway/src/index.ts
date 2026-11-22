@@ -42,7 +42,7 @@ async function main(): Promise<void> {
     throw new Error("ALLOWED_TELEGRAM_USER_IDS is empty. Set your numeric Telegram user ID to lock the bot down.");
   }
 
-  const modelId = resolveModelId(env, "main");
+  const modelId = resolveModelId(env);
   const sandbox = createSandbox(sandboxConfig(env));
   const storagePath = `${env.STATE_DIR}/eien.sqlite`;
   const base = env.SYSTEM_PROMPT ?? `${await loadSoul(env.SOUL_PATH)}\n\n${operatingManual(sandbox.name, sandbox.root)}`;

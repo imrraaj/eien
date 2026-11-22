@@ -1,7 +1,7 @@
 import { defineTool, type ConversationId, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import { num, obj, opt, str } from "@earendil-works/pi-schema";
 import { editText, readText, resolveInRoot, writeText, type Sandbox } from "@eien/sandbox";
-import { runWebTool, type WebOptions } from "@eien/tools";
+import { webFetch, webSearch, type WebOptions } from "./web.ts";
 
 const MAX_COMMAND_SECONDS = 900;
 const DEFAULT_COMMAND_SECONDS = 120;
@@ -70,33 +70,26 @@ export function createWorkTools(sandbox: Sandbox, web: WebOptions, deliverFile: 
       ),
   });
 
-  const webSearch = defineTool({
+  const search = defineTool({
     name: "web_search",
-    description: "Search the web for current information.",
+    description:
+      "Search the web for current information (news, prices, releases, docs). Returns titles, URLs, and snippets; use web_fetch to read a result in full.",
     parameters: obj({ query: str(), numResults: opt(num()) }),
     execute: async (args) => {
-      const found = await runWebTool(
-        {
-          type: "toolCall",
-          id: "web",
-          name: "web_search",
-          arguments: { query: args.query, numResults: args.numResults ?? 5 },
-        },
-        web,
-      );
+      const found = await webSearch(web, args.query, args.numResults);
       return toolResult(found.text, found.isError);
     },
   });
 
-  const webFetch = defineTool({
+  const fetchPage = defineTool({
     name: "web_fetch",
     description: "Fetch one http(s) URL and return readable text.",
     parameters: obj({ url: str() }),
     execute: async (args) => {
-      const page = await runWebTool({ type: "toolCall", id: "web", name: "web_fetch", arguments: { url: args.url } }, web);
+      const page = await webFetch(web, args.url);
       return toolResult(page.text, page.isError);
     },
   });
 
-  return [bash, read, write, edit, sendFile, webSearch, webFetch];
+  return [bash, read, write, edit, sendFile, search, fetchPage];
 }
