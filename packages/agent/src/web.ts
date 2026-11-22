@@ -1,3 +1,4 @@
+import { Result, TaggedError } from "better-result";
 import { z } from "zod";
 
 export interface WebOptions {
@@ -5,14 +6,16 @@ export interface WebOptions {
   exaApiKey?: string;
 }
 
-export interface WebToolResult {
-  text: string;
-  isError: boolean;
-}
+/** The model asked for something the web tools cannot do (bad URL, empty query). */
+export class InvalidWebInput extends TaggedError("InvalidWebInput")<{ message: string }> {}
+
+/** Exa's MCP endpoint failed: network, HTTP status, protocol, or a tool-level error. */
+export class WebFailed extends TaggedError("WebFailed")<{ message: string; cause?: unknown }> {}
+
+export type WebError = InvalidWebInput | WebFailed;
 
 const PROTOCOL_VERSION = "2024-11-05";
-const CLIENT_NAME = "eien";
-const CLIENT_VERSION = "0.1.0";
+const CLIENT_INFO = { name: "eien", version: "0.1.0" };
 const MAX_RESULT_CHARS = 14_000;
 
 /** JSON-RPC response envelope; extra fields are ignored. */
@@ -28,217 +31,165 @@ const ToolCallResult = z.looseObject({
   content: z.array(z.looseObject({ type: z.string(), text: z.string().optional() })).default([]),
 });
 
-interface McpSession {
-  id: string;
+const failed = (message: string, cause?: unknown) => new WebFailed({ message, cause });
+
+function unwrap(message: z.infer<typeof RpcResponse>, id: number): Result<unknown, WebFailed> {
+  if (message.id !== undefined && message.id !== id) {
+    return Result.err(failed(`MCP response id mismatch (${message.id} != ${id})`));
+  }
+  if (message.error) {
+    const code = message.error.code ? ` ${message.error.code}` : "";
+    return Result.err(failed(`MCP error${code}: ${message.error.message ?? "unknown"}`));
+  }
+  return Result.ok(message.result);
 }
 
-let session: McpSession | undefined;
-let initializing: Promise<McpSession> | undefined;
-let nextId = 1;
-
-function requestHeaders(options: WebOptions, sessionId?: string, withBody = false): Record<string, string> {
-  const headers: Record<string, string> = {
-    accept: "application/json, text/event-stream",
-  };
-  if (withBody) headers["content-type"] = "application/json";
-  if (sessionId) {
-    headers["mcp-session-id"] = sessionId;
-    headers["mcp-protocol-version"] = PROTOCOL_VERSION;
+/** The JSON-RPC response with `id`, from a JSON body or an SSE stream. */
+async function readRpcResponse(response: Response, id: number): Promise<Result<unknown, WebFailed>> {
+  if ((response.headers.get("content-type") ?? "").includes("application/json")) {
+    const parsed = RpcResponse.safeParse(await response.json().catch(() => undefined));
+    return parsed.success ? unwrap(parsed.data, id) : Result.err(failed("invalid MCP response"));
   }
-  if (options.exaApiKey) headers["x-api-key"] = options.exaApiKey;
-  return headers;
+
+  for (const line of (await response.text()).split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    const data = line.slice(5).trim();
+    // Keepalives and non-JSON frames are skipped.
+    const parsed = RpcResponse.safeParse(Result.try(() => JSON.parse(data) as unknown).unwrapOr(undefined));
+    if (parsed.success && parsed.data.id === id) return unwrap(parsed.data, id);
+  }
+  return Result.err(failed(`MCP returned no response for request ${id}`));
 }
 
-function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
-  const timeout = AbortSignal.timeout(ms);
-  return signal ? AbortSignal.any([signal, timeout]) : timeout;
-}
-
-function unwrap(message: unknown, id: number): unknown {
-  const parsed = RpcResponse.safeParse(message);
-  if (!parsed.success) throw new Error("invalid MCP response");
-  const envelope = parsed.data;
-  if (envelope.id !== undefined && envelope.id !== id) {
-    throw new Error(`MCP response id mismatch (${envelope.id} != ${id})`);
-  }
-  if (envelope.error) {
-    throw new Error(
-      `MCP error${envelope.error.code ? ` ${envelope.error.code}` : ""}: ${envelope.error.message ?? "unknown"}`,
-    );
-  }
-  return envelope.result;
-}
-
-async function parseRpcResponse(response: Response, id: number): Promise<unknown> {
-  const contentType = response.headers.get("content-type") ?? "";
-
-  if (contentType.includes("application/json")) {
-    return unwrap(await response.json(), id);
-  }
-
-  const body = await response.text();
-  const events = body
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trim())
-    .filter((data) => data.length > 0 && data !== "[DONE]");
-
-  for (const event of events) {
-    try {
-      const message = RpcResponse.safeParse(JSON.parse(event));
-      if (message.success && message.data.id === id) return unwrap(message.data, id);
-    } catch {
-      // Ignore keepalive/non-JSON frames.
-    }
-  }
-
-  throw new Error(`MCP returned no response for request ${id}`);
-}
-
-async function initialize(options: WebOptions, signal?: AbortSignal): Promise<McpSession> {
-  const id = nextId++;
-  const response = await fetch(options.mcpUrl, {
-    method: "POST",
-    headers: requestHeaders(options, undefined, true),
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id,
-      method: "initialize",
-      params: {
-        protocolVersion: PROTOCOL_VERSION,
-        capabilities: {},
-        clientInfo: { name: CLIENT_NAME, version: CLIENT_VERSION },
-      },
-    }),
-    signal: withTimeout(signal, 30_000),
-  });
-
-  if (!response.ok) {
-    throw new Error(
-      `MCP initialize failed (HTTP ${response.status}): ${(await response.text()).slice(0, 300)}`,
-    );
-  }
-
-  const sessionId = response.headers.get("mcp-session-id");
-  if (!sessionId) throw new Error("MCP server did not return a session id");
-
-  await parseRpcResponse(response, id);
-
-  // Best-effort protocol notification; Exa accepts requests without it.
-  try {
-    await fetch(options.mcpUrl, {
-      method: "POST",
-      headers: requestHeaders(options, sessionId, true),
-      body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
-      signal: withTimeout(signal, 10_000),
-    });
-  } catch {
-    // Ignore.
-  }
-
-  return { id: sessionId };
-}
-
-async function getSession(options: WebOptions, signal?: AbortSignal): Promise<McpSession> {
-  if (session) return session;
-  if (!initializing) {
-    initializing = initialize(options, signal)
-      .then((created) => {
-        session = created;
-        return created;
-      })
-      .finally(() => {
-        initializing = undefined;
-      });
-  }
-  return initializing;
-}
-
-async function callTool(
-  options: WebOptions,
-  name: string,
-  args: Record<string, unknown>,
-  signal?: AbortSignal,
-  retry = true,
-): Promise<unknown> {
-  const current = await getSession(options, signal);
-  const id = nextId++;
-
-  const response = await fetch(options.mcpUrl, {
-    method: "POST",
-    headers: requestHeaders(options, current.id, true),
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id,
-      method: "tools/call",
-      params: { name, arguments: args },
-    }),
-    signal: withTimeout(signal, 45_000),
-  });
-
-  if (!response.ok) {
-    const detail = (await response.text()).slice(0, 300);
-    if (retry && (response.status === 400 || response.status === 404)) {
-      session = undefined;
-      return callTool(options, name, args, signal, false);
-    }
-    throw new Error(`MCP ${name} failed (HTTP ${response.status}): ${detail}`);
-  }
-
-  return parseRpcResponse(response, id);
-}
-
-function resultText(result: unknown): { text: string; isError: boolean } {
+function toolText(result: unknown): Result<string, WebFailed> {
   const parsed = ToolCallResult.safeParse(result);
-  if (!parsed.success) return { text: "MCP returned an invalid result", isError: true };
-
+  if (!parsed.success) return Result.err(failed("MCP returned an invalid result"));
   const text = parsed.data.content
     .flatMap((block) => (block.type === "text" && block.text !== undefined ? [block.text] : []))
     .join("\n\n")
     .trim();
-  return { text, isError: parsed.data.isError === true };
+  return parsed.data.isError === true ? Result.err(failed(text || "the web tool reported an error")) : Result.ok(text);
 }
 
-function truncate(text: string, limit = MAX_RESULT_CHARS): string {
-  if (text.length <= limit) return text;
-  return `${text.slice(0, limit)}\n\n… [${text.length - limit} characters truncated]`;
+function truncate(text: string): string {
+  if (text.length <= MAX_RESULT_CHARS) return text;
+  return `${text.slice(0, MAX_RESULT_CHARS)}\n\n… [${text.length - MAX_RESULT_CHARS} characters truncated]`;
 }
 
-function parseHttpUrl(value: string): URL {
-  const url = new URL(value);
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("only http(s) URLs are supported");
+function httpUrl(value: string): Result<string, InvalidWebInput> {
+  const url = Result.try(() => new URL(value)).unwrapOr(undefined);
+  if (!url || (url.protocol !== "http:" && url.protocol !== "https:")) {
+    return Result.err(new InvalidWebInput({ message: "only http(s) URLs are supported" }));
   }
   if (url.username || url.password) {
-    throw new Error("URLs with credentials are not allowed");
+    return Result.err(new InvalidWebInput({ message: "URLs with credentials are not allowed" }));
   }
-  return url;
+  return Result.ok(url.toString());
 }
 
-async function guarded(run: () => Promise<WebToolResult>): Promise<WebToolResult> {
-  try {
-    return await run();
-  } catch (error) {
-    return { text: `web tool failed: ${error instanceof Error ? error.message : String(error)}`, isError: true };
+export interface WebClient {
+  search(query: string, numResults?: number): Promise<Result<string, WebError>>;
+  fetch(url: string): Promise<Result<string, WebError>>;
+}
+
+/** web_search and web_fetch through Exa's hosted MCP endpoint, with one lazily opened session. */
+export function createWebClient(options: WebOptions): WebClient {
+  let session: Promise<Result<string, WebFailed>> | undefined;
+  let nextId = 1;
+
+  const headers = (sessionId?: string): Record<string, string> => ({
+    accept: "application/json, text/event-stream",
+    "content-type": "application/json",
+    ...(sessionId ? { "mcp-session-id": sessionId, "mcp-protocol-version": PROTOCOL_VERSION } : {}),
+    ...(options.exaApiKey ? { "x-api-key": options.exaApiKey } : {}),
+  });
+
+  const post = (body: object, sessionId: string | undefined, timeoutMs: number) =>
+    Result.tryPromise({
+      try: () =>
+        fetch(options.mcpUrl, {
+          method: "POST",
+          headers: headers(sessionId),
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(timeoutMs),
+        }),
+      catch: (cause) => failed(`could not reach the web service: ${String(cause)}`, cause),
+    });
+
+  const initialize = () =>
+    Result.gen(async function* () {
+      const id = nextId++;
+      const response = yield* Result.await(
+        post(
+          {
+            jsonrpc: "2.0",
+            id,
+            method: "initialize",
+            params: { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: CLIENT_INFO },
+          },
+          undefined,
+          30_000,
+        ),
+      );
+      if (!response.ok) {
+        yield* failed(`MCP initialize failed (HTTP ${response.status}): ${(await response.text()).slice(0, 300)}`);
+      }
+      const sessionId = response.headers.get("mcp-session-id");
+      if (!sessionId) return Result.err(failed("MCP server did not return a session id"));
+      yield* Result.await(readRpcResponse(response, id));
+
+      // Best-effort protocol notification; Exa accepts requests without it.
+      await post({ jsonrpc: "2.0", method: "notifications/initialized" }, sessionId, 10_000);
+      return Result.ok(sessionId);
+    });
+
+  /** The open session, opening one if needed. A failed open is forgotten so the next call retries. */
+  function sessionId(): Promise<Result<string, WebFailed>> {
+    if (!session) {
+      const opening = initialize();
+      session = opening;
+      void opening.then((opened) => {
+        if (opened.isErr() && session === opening) session = undefined;
+      });
+    }
+    return session;
   }
-}
 
-/** Search through Exa's hosted MCP endpoint. */
-export function webSearch(options: WebOptions, rawQuery: string, requested = 5): Promise<WebToolResult> {
-  return guarded(async () => {
-    const query = rawQuery.trim();
-    if (!query) return { text: "query must not be empty", isError: true };
-    const numResults = Math.min(10, Math.max(1, Number.isFinite(requested) ? Math.trunc(requested) : 5));
-    const result = resultText(await callTool(options, "web_search_exa", { query, numResults }));
-    return { text: truncate(result.text || "(no results)"), isError: result.isError };
-  });
-}
+  const callTool = (name: string, args: Record<string, unknown>, retry = true): Promise<Result<string, WebFailed>> =>
+    Result.gen(async function* () {
+      const current = yield* Result.await(sessionId());
+      const id = nextId++;
+      const response = yield* Result.await(
+        post({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }, current, 45_000),
+      );
+      if (!response.ok) {
+        // An expired session answers 400/404: open a new one and try once more.
+        if (retry && (response.status === 400 || response.status === 404)) {
+          session = undefined;
+          return await callTool(name, args, false);
+        }
+        yield* failed(`MCP ${name} failed (HTTP ${response.status}): ${(await response.text()).slice(0, 300)}`);
+      }
+      const result = yield* Result.await(readRpcResponse(response, id));
+      return toolText(result);
+    });
 
-/** Fetch one http(s) page as readable text through Exa's hosted MCP endpoint. */
-export function webFetch(options: WebOptions, rawUrl: string): Promise<WebToolResult> {
-  return guarded(async () => {
-    const url = parseHttpUrl(rawUrl).toString();
-    const result = resultText(await callTool(options, "web_fetch_exa", { urls: [url], maxCharacters: 20_000 }));
-    return { text: truncate(result.text || "(empty page)"), isError: result.isError };
-  });
+  return {
+    search(rawQuery, requested = 5) {
+      const query = rawQuery.trim();
+      if (!query) return Promise.resolve(Result.err(new InvalidWebInput({ message: "query must not be empty" })));
+      const numResults = Math.min(10, Math.max(1, Number.isFinite(requested) ? Math.trunc(requested) : 5));
+      return callTool("web_search_exa", { query, numResults }).then(
+        Result.map((text: string) => truncate(text || "(no results)")),
+      );
+    },
+
+    fetch(rawUrl) {
+      return Result.gen(async function* () {
+        const url = yield* httpUrl(rawUrl);
+        const text = yield* Result.await(callTool("web_fetch_exa", { urls: [url], maxCharacters: 20_000 }));
+        return Result.ok(truncate(text || "(empty page)"));
+      });
+    },
+  };
 }
