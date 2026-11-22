@@ -30,7 +30,7 @@ class FakeSandbox implements Sandbox {
 describe("file helpers", () => {
   test("readText resolves against the sandbox root", async () => {
     const sandbox = new FakeSandbox(() => ok("one\ntwo\n"));
-    const result = await readText(sandbox, "notes.txt");
+    const result = (await readText(sandbox, "notes.txt")).unwrap();
 
     expect(result.path).toBe("/work/notes.txt");
     expect(result.text).toBe("one\ntwo\n");
@@ -39,13 +39,21 @@ describe("file helpers", () => {
 
   test("readText rejects paths outside the root before running anything", async () => {
     const sandbox = new FakeSandbox();
-    await expect(readText(sandbox, "../../etc/passwd")).rejects.toThrow("escapes the workspace");
+    const result = await readText(sandbox, "../../etc/passwd");
+    expect(result.isErr() && result.error._tag).toBe("InvalidPath");
     expect(sandbox.calls).toHaveLength(0);
+  });
+
+  test("readText reports a failing command with its output", async () => {
+    const sandbox = new FakeSandbox(() => ({ ...ok("not a readable file: /work/x\n"), exitCode: 2 }));
+    const result = await readText(sandbox, "x");
+    if (result.isOk()) throw new Error("expected failure");
+    expect(result.error).toMatchObject({ _tag: "CommandFailed", exitCode: 2, message: "not a readable file: /work/x" });
   });
 
   test("writeText sends content on stdin", async () => {
     const sandbox = new FakeSandbox();
-    await writeText(sandbox, "dir/a.txt", "hello");
+    (await writeText(sandbox, "dir/a.txt", "hello")).unwrap();
 
     expect(sandbox.calls[0]?.command).toContain("mkdir -p -- '/work/dir'");
     expect(sandbox.calls[0]?.command).toContain("cat > '/work/dir/a.txt'");
@@ -56,9 +64,9 @@ describe("file helpers", () => {
     const sandbox = new FakeSandbox((command) =>
       command.includes("sed -n") ? ok("a\nold\nb\n") : ok(),
     );
-    const result = await editText(sandbox, "f.txt", "old", "new");
+    const result = (await editText(sandbox, "f.txt", "old", "new")).unwrap();
 
-    expect(result).toMatchObject({ replacements: 1, line: 2, path: "/work/f.txt" });
+    expect(result).toEqual({ line: 2, path: "/work/f.txt" });
     expect(sandbox.calls.at(-1)?.options?.stdin).toBe("a\nnew\nb\n");
   });
 
@@ -66,14 +74,23 @@ describe("file helpers", () => {
     const sandbox = new FakeSandbox((command) =>
       command.includes("sed -n") ? ok("old\nold\n") : ok(),
     );
-    await expect(editText(sandbox, "f.txt", "old", "new")).rejects.toThrow("appears 2 times");
+    const result = await editText(sandbox, "f.txt", "old", "new");
+    if (result.isOk()) throw new Error("expected failure");
+    expect(result.error).toMatchObject({ _tag: "EditFailed", reason: "ambiguous" });
+    expect(sandbox.calls).toHaveLength(1);
+  });
+
+  test("editText refuses missing and empty text without writing", async () => {
+    const sandbox = new FakeSandbox((command) => (command.includes("sed -n") ? ok("abc\n") : ok()));
+    const missing = await editText(sandbox, "f.txt", "zzz", "new");
+    const empty = await editText(sandbox, "f.txt", "", "new");
+    expect(missing.isErr() && missing.error).toMatchObject({ _tag: "EditFailed", reason: "not_found" });
+    expect(empty.isErr() && empty.error).toMatchObject({ _tag: "EditFailed", reason: "empty" });
+    expect(sandbox.calls.every((call) => call.options?.stdin === undefined)).toBe(true);
   });
 
   test("statSandboxFile parses type and size", async () => {
     const sandbox = new FakeSandbox(() => ok("regular file|1234\n"));
-    await expect(statSandboxFile(sandbox, "/work/a.bin")).resolves.toEqual({
-      type: "regular file",
-      size: 1234,
-    });
+    expect((await statSandboxFile(sandbox, "/work/a.bin")).unwrap()).toEqual({ type: "regular file", size: 1234 });
   });
 });
