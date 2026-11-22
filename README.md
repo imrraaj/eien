@@ -26,6 +26,8 @@ indicators are all in `@eien/telegram`.
   runtime copies them into `/work/uploads`.
 - **Output services** implement `OutputService` (`send(chat, message)`) and
   receive `text`, `file`, and `status` (`working`, `queued`, `idle`) messages.
+  A limit they cannot meet (a file too large, say) comes back as a typed
+  `DeliveryFailed`, never a throw.
   Each renders them its own way or ignores them. A service can also contribute
   a `promptHint`, which is added to the system prompt for its chats.
 - The `OutputRouter` strips em dashes from everything the bot sends, whatever
@@ -195,6 +197,22 @@ tests/                tests, one folder per package
 sandbox/              sbx bootstrap, egress policy, demo container image
 deploy/               Docker demo setup and teardown
 ```
+
+## Errors and validation
+
+- **Expected failures are values.** Anything a caller can act on returns a
+  `better-result` `Result` with a `TaggedError`: sandbox paths and commands
+  (`InvalidPath`, `CommandFailed`, `EditFailed`), the web client (`InvalidWebInput`,
+  `WebFailed`), delivery (`DeliveryFailed`), schedules (`ScheduleRejected`),
+  attachment downloads (`DownloadFailed`).
+- **Tools reach the model through one adapter,** `fromResult` in
+  `packages/agent/src/tool-result.ts`: `Ok` becomes the tool output, `Err` a tool
+  error carrying its message.
+- **Bugs and bad config still throw:** a missing token, a relative workspace root,
+  a duplicate service name, a missing binary. pi-durable task phases also throw by
+  contract.
+- **Untrusted data is parsed, not cast:** Zod for env and Exa responses, pi-schema
+  for tool arguments (pi-durable builds the model's tool schemas from it).
 
 ## Checks
 
