@@ -2,6 +2,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   Harness,
   LiveDoc,
+  configure,
   createRegistry,
   defineExtension,
   type AgentChange,
@@ -12,20 +13,17 @@ import {
 } from "@earendil-works/pi-durable";
 import { addressKey, parseAddressKey, type Address, type Attachment, type OutboundMessage } from "@eien/io";
 import { PROVIDER_ID, type createModelsRegistry } from "@eien/llm";
-import { statSandboxFile, type Sandbox } from "@eien/sandbox";
-import { formatBytes, type Logger } from "@eien/shared";
+import type { Sandbox } from "@eien/sandbox";
+import type { Logger } from "@eien/shared";
 import type { WebOptions } from "./web.ts";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
 import { Chats, Delivery } from "./chats.ts";
 import { answerText, callsTools } from "./entries.ts";
 import type { ScheduleInfo } from "./schedule-text.ts";
-import { Schedule, Schedules, createScheduleTool, scheduleInfos } from "./schedules.ts";
+import { Schedule, Schedules, removeSchedule, scheduleInfos, scheduleTool } from "./schedules.ts";
 import { openSqliteStorage } from "./sqlite.ts";
 import { SubagentExtension } from "./subagents.ts";
 import { createWorkTools } from "./tools.ts";
-import { ingestAttachments } from "./uploads.ts";
+import { exportFile, intake } from "./transfer.ts";
 
 const CHORD = BACKGROUND_CONTEXT;
 
@@ -86,45 +84,26 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
   async function deliverFile(conversationId: ConversationId, remotePath: string, caption?: string): Promise<string> {
     const to = addresses.get(conversationId);
     if (!to) throw new Error("this conversation has no chat to send files to");
-
-    const info = await statSandboxFile(sandbox, remotePath);
-    if (!info.type.includes("regular")) throw new Error(`${remotePath} is not a regular file (${info.type})`);
-
-    const dir = await mkdtemp(join(tmpdir(), "eien-out-"));
-    const name = basename(remotePath) || "file";
-    try {
-      const localPath = join(dir, name);
-      await sandbox.copyOut(remotePath, localPath);
-      await outbox.send(to, { kind: "file", localPath, name, size: info.size, caption });
-      return `sent ${name} (${formatBytes(info.size)}) to the chat`;
-    } finally {
-      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
-    }
+    return exportFile(sandbox, remotePath, caption, (message) => outbox.send(to, message));
   }
 
-  // Bound late: the schedule tool aborts through the Harness it is installed in.
-  let harness: Harness | undefined;
   const toolsExtension = defineExtension({
     name: "eien-tools",
     tasks: [Schedule],
-    tools: [
-      ...createWorkTools(sandbox, options.web, deliverFile),
-      createScheduleTool((id, context) => harness!.abortTask(id, context)),
-    ],
+    tools: [...createWorkTools(sandbox, options.web, deliverFile), scheduleTool],
   });
   const registry = createRegistry();
   registry.install(toolsExtension);
   registry.install(SubagentExtension);
 
-  const opened = await Harness.open(
+  const harness = await Harness.open(
     await openSqliteStorage(options.storagePath),
     { models: options.models, registry, onReport: (report) => log.error("durable report", { report }) },
     CHORD,
   );
-  harness = opened;
 
   // A failed session never recovers by itself; exit so the supervisor restarts us.
-  void opened.closed.then((end) => {
+  void harness.closed.then((end) => {
     if (end.kind !== "failed") return;
     log.error("durable storage failed; exiting", { error: end.error });
     setTimeout(() => process.exit(1), 100);
@@ -181,23 +160,21 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
     return conversation;
   }
 
+  /** The chat's conversation, created and mapped in one commit the first time the chat speaks. */
   async function openOrCreate(to: Address): Promise<Conversation> {
     const key = addressKey(to);
-    const known = await opened.commit(async (tx) => (await tx.doc(Chats)).conversations[key], CHORD);
-    const existing = known === undefined ? undefined : await opened.conversation(known, CHORD);
-    if (existing) return attach(existing, to);
-
-    const created = await opened.createConversation(
-      {
-        ownership: { kind: "ownerless" },
-        agent: { ...agentFor(to.service), extensions: [toolsExtension, SubagentExtension] },
-      },
-      CHORD,
-    );
-    await opened.commit(async (tx) => {
-      (await tx.doc(Chats)).conversations[key] = created.id;
+    const id = await harness.commit(async (tx) => {
+      const chats = await tx.doc(Chats);
+      const known = chats.conversations[key];
+      if (known !== undefined) return known;
+      const created = await tx.createConversation({ ownership: { kind: "ownerless" } });
+      await configure(tx, created.id, { ...agentFor(to.service), extensions: [toolsExtension, SubagentExtension] });
+      chats.conversations[key] = created.id;
+      return created.id;
     }, CHORD);
-    return attach(created, to);
+    const conversation = await harness.conversation(id, CHORD);
+    if (!conversation) throw new Error(`conversation ${id} for ${key} is missing`);
+    return attach(conversation, to);
   }
 
   /** One open per chat, even when messages race in before the first open finishes. */
@@ -232,20 +209,19 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
   }
 
   // Reattach every known chat, then let work the last process left run again.
-  const known = await opened.commit(async (tx) => Object.entries((await tx.doc(Chats)).conversations), CHORD);
+  const known = await harness.commit(async (tx) => Object.entries((await tx.doc(Chats)).conversations), CHORD);
   for (const [key, id] of known) {
     const to = parseAddressKey(key);
-    const conversation = to && (await opened.conversation(id, CHORD));
+    const conversation = to && (await harness.conversation(id, CHORD));
     if (to && conversation) conversations.set(key, attach(conversation, to));
   }
   await Promise.all(conversations.values());
-  opened.resume();
+  harness.resume();
   log.info("durable runtime ready", { chats: conversations.size });
 
   return {
     async prompt(from, text, requestId, attachments = []) {
-      const notes = await ingestAttachments(sandbox, attachments);
-      const content = [text || (notes.length > 0 ? "The user sent this without instructions." : ""), ...notes].join("\n\n");
+      const content = await intake(sandbox, text, attachments);
       const conversation = await conversationFor(from);
       const admitted = await conversation.commit(async (tx) => {
         const busy = (await tx.doc(LiveDoc, conversation.id)).run !== undefined;
@@ -254,7 +230,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
       }, CHORD);
 
       await send(from, { kind: "status", status: admitted.busy ? "queued" : "working" });
-      const submission = await opened.submission(admitted.id, CHORD);
+      const submission = await harness.submission(admitted.id, CHORD);
       if (submission) void track(from, submission.wait(CHORD));
     },
 
@@ -270,18 +246,9 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
 
     async cancelSchedule(chat, name) {
       const conversation = await conversationFor(chat);
-      const taskId = await conversation.commit(async (tx) => {
-        const doc = await tx.doc(Schedules, conversation.id);
-        const found = doc.items[name];
-        if (!found) return undefined;
-        delete doc.items[name];
-        return found.taskId;
-      }, CHORD);
-      if (taskId === undefined) return false;
-      await opened.abortTask(taskId, CHORD).catch(() => undefined);
-      return true;
+      return conversation.commit((tx) => removeSchedule(tx, conversation.id, name), CHORD);
     },
 
-    close: () => opened.close(CHORD),
+    close: () => harness.close(CHORD),
   };
 }

@@ -4,7 +4,7 @@ import { Bot, InputFile, type Api, type Context } from "grammy";
 import { createReadStream } from "node:fs";
 import { downloadAttachment } from "./attachments.ts";
 import { htmlToPlainText, TELEGRAM_CHUNK_LIMIT, toTelegramChunks } from "./markdown.ts";
-import { groupGate } from "./mentions.ts";
+import { groupGate, type GroupGateInput } from "./mentions.ts";
 import { splitMessage } from "./text.ts";
 
 /** Bot API uploads stop at 50 MB. */
@@ -99,7 +99,7 @@ export function createTelegramService(options: TelegramOptions): TelegramService
   });
 
   /** Group messages count only when they mention or reply to the bot; returns the text addressed to it. */
-  function addressedText(ctx: Context, text: string, entities: Parameters<typeof groupGate>[0]["entities"]) {
+  function addressedText(ctx: Context, text: string, entities: GroupGateInput["entities"]): string | undefined {
     const gate = groupGate({
       isGroup: ctx.chat?.type !== "private",
       text,

@@ -129,13 +129,14 @@ const subagentTool = defineTool({
 
     if (name === undefined) return reply(`${action} needs a name.`);
     const agent = find(name);
-    if (action !== "spawn" && !agent) return reply(`No subagent named ${name}.`);
 
     if (action === "stop") {
-      const target = await api.conversation(agent!.conversationId, callContext);
+      if (!agent) return reply(`No subagent named ${name}.`);
+      const target = await api.conversation(agent.conversationId, callContext);
       await target?.abort(callContext);
-      return reply(`Stopped ${name}.`, agent!.conversationId);
+      return reply(`Stopped ${name}.`, agent.conversationId);
     }
+    if (action === "send" && !agent) return reply(`No subagent named ${name}.`);
 
     if (message === undefined) return reply(`${action} needs a message.`);
 
