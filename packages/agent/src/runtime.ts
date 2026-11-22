@@ -11,10 +11,12 @@ import {
   type EntryId,
   type SettledSubmissionRecord,
 } from "@earendil-works/pi-durable";
-import { addressKey, parseAddressKey, type Address, type Attachment, type OutboundMessage } from "@eien/io";
+import { addressKey, parseAddressKey, type Address, type Attachment, type DeliveryFailed, type OutboundMessage } from "@eien/io";
 import { PROVIDER_ID, type createModelsRegistry } from "@eien/llm";
 import type { Sandbox } from "@eien/sandbox";
 import type { Logger } from "@eien/shared";
+import { Result } from "better-result";
+import type { CommandFailed } from "@eien/sandbox";
 import type { WebOptions } from "./web.ts";
 import { Chats, Delivery } from "./chats.ts";
 import { answerText, callsTools } from "./entries.ts";
@@ -29,7 +31,7 @@ const CHORD = BACKGROUND_CONTEXT;
 
 /** Where the runtime sends what the agent says. `OutputRouter` from `@eien/io` is one. */
 export interface Outbox {
-  send(to: Address, message: OutboundMessage): Promise<void>;
+  send(to: Address, message: OutboundMessage): Promise<Result<void, DeliveryFailed>>;
 }
 
 export interface RuntimeOptions {
@@ -48,10 +50,15 @@ export interface RuntimeOptions {
 /** The durable agent loop. It knows addresses, never the services behind them. */
 export interface AgentRuntime {
   /**
-   * Start a run, or steer the running one. Attachments go into the sandbox first.
-   * Resolves once the message is durably admitted.
+   * Start a run, or steer the running one. Attachments go into the sandbox first;
+   * failing to store one is the only expected error. Resolves once the message is durably admitted.
    */
-  prompt(from: Address, text: string, requestId: string, attachments?: readonly Attachment[]): Promise<void>;
+  prompt(
+    from: Address,
+    text: string,
+    requestId: string,
+    attachments?: readonly Attachment[],
+  ): Promise<Result<void, CommandFailed>>;
   reset(chat: Address): Promise<void>;
   schedules(chat: Address): Promise<ScheduleInfo[]>;
   /** False when there is no schedule by that name. */
@@ -78,13 +85,17 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
   /** Unsettled submissions per chat; the chat goes idle when this reaches zero. */
   const inFlight = new Map<string, number>();
 
-  const send = (to: Address, message: OutboundMessage) =>
-    outbox.send(to, message).catch((error: unknown) => log.error("could not deliver", { to, kind: message.kind, error }));
+  /** Send and log a failed delivery; for messages nobody can act on beyond that. */
+  async function send(to: Address, message: OutboundMessage): Promise<void> {
+    const sent = await outbox.send(to, message);
+    if (sent.isErr()) log.error("could not deliver", { to, kind: message.kind, error: sent.error });
+  }
 
-  async function deliverFile(conversationId: ConversationId, remotePath: string, caption?: string): Promise<string> {
+  async function deliverFile(conversationId: ConversationId, path: string, caption?: string) {
     const to = addresses.get(conversationId);
-    if (!to) throw new Error("this conversation has no chat to send files to");
-    return exportFile(sandbox, remotePath, caption, (message) => outbox.send(to, message));
+    // Only chat conversations have an address; subagents report through their parent.
+    if (!to) return Result.err(new Error("this conversation has no chat to send files to"));
+    return exportFile(sandbox, path, caption, (message) => outbox.send(to, message));
   }
 
   const toolsExtension = defineExtension({
@@ -221,7 +232,9 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
 
   return {
     async prompt(from, text, requestId, attachments = []) {
-      const content = await intake(sandbox, text, attachments);
+      const stored = await intake(sandbox, text, attachments);
+      if (stored.isErr()) return stored;
+      const content = stored.value;
       const conversation = await conversationFor(from);
       const admitted = await conversation.commit(async (tx) => {
         const busy = (await tx.doc(LiveDoc, conversation.id)).run !== undefined;
@@ -232,6 +245,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
       await send(from, { kind: "status", status: admitted.busy ? "queued" : "working" });
       const submission = await harness.submission(admitted.id, CHORD);
       if (submission) void track(from, submission.wait(CHORD));
+      return Result.ok(undefined);
     },
 
     async reset(chat) {

@@ -68,7 +68,10 @@ async function main(): Promise<void> {
     log,
   });
 
-  const reply = (to: Address, text: string) => outputs.send(to, { kind: "text", text });
+  async function reply(to: Address, text: string): Promise<void> {
+    const sent = await outputs.send(to, { kind: "text", text });
+    if (sent.isErr()) log.warn("could not reply", { to, error: sent.error });
+  }
 
   async function command(from: Address, name: string, args: readonly string[]): Promise<void> {
     switch (name) {
@@ -109,7 +112,8 @@ async function main(): Promise<void> {
       return reply(event.from, `Message too long (${event.text.length} chars). The limit is ${MAX_INPUT_CHARS}.`);
     }
     if (!event.text && event.attachments.length === 0) return reply(event.from, "How can I help?");
-    await runtime.prompt(event.from, event.text, event.id, event.attachments);
+    const admitted = await runtime.prompt(event.from, event.text, event.id, event.attachments);
+    if (admitted.isErr()) await reply(event.from, `Could not store the attachment: ${admitted.error.message}`);
   }
 
   const inputs = new InputHub(handle);

@@ -4,11 +4,12 @@ import {
   defineTool,
   type ConversationId,
   type TaskId,
-  type ToolExecutionResult,
   type Tx,
 } from "@earendil-works/pi-durable";
 import { obj, oneOf, opt, str } from "@earendil-works/pi-schema";
+import { Result, TaggedError } from "better-result";
 import { formatDuration, formatSchedules, parseDelay, type ScheduleInfo } from "./schedule-text.ts";
+import { fromResult, toolResult } from "./tool-result.ts";
 
 const MAX_DELAY_MS = 30 * 86_400_000;
 const MIN_REPEAT_MS = 10_000;
@@ -83,8 +84,41 @@ export function scheduleInfos(items: Readonly<Record<string, ScheduleEntry>>): S
   }));
 }
 
-function result(text: string, isError = false): ToolExecutionResult {
-  return { output: [{ type: "text", text }], isError };
+/** The model's schedule request does not make sense: bad delay, missing prompt, taken name. */
+export class ScheduleRejected extends TaggedError("ScheduleRejected")<{ message: string }> {}
+
+export interface ScheduleRequest {
+  name: string;
+  prompt?: string;
+  delay?: string;
+  every?: string;
+}
+
+export interface SchedulePlan {
+  name: string;
+  prompt: string;
+  delayMs: number;
+  everyMs?: number;
+}
+
+/** Validate an add request against the names already taken. Pure, so it is tested on its own. */
+export function planSchedule(request: ScheduleRequest, taken: ReadonlySet<string>): Result<SchedulePlan, ScheduleRejected> {
+  const reject = (message: string) => Result.err(new ScheduleRejected({ message }));
+  const { name, prompt } = request;
+
+  if (prompt === undefined) return reject("add needs a prompt.");
+  const delayMs = parseDelay(request.delay ?? "");
+  if (delayMs === undefined) return reject(`invalid delay "${request.delay ?? ""}"; use e.g. 30s, 2m, 1h`);
+  if (delayMs > MAX_DELAY_MS) return reject("delay is too long (max 30 days)");
+
+  const everyMs = request.every === undefined ? undefined : parseDelay(request.every);
+  if (request.every !== undefined && everyMs === undefined) {
+    return reject(`invalid repeat "${request.every}"; use e.g. 15m, 1h`);
+  }
+  if (everyMs !== undefined && everyMs < MIN_REPEAT_MS) return reject("a repeating schedule must be at least 10s apart");
+  if (taken.has(name)) return reject(`"${name}" already exists; cancel it first or pick another name.`);
+
+  return Result.ok({ name, prompt, delayMs, everyMs });
 }
 
 /** Cancel a schedule in the caller's commit. False when there is none by that name. */
@@ -109,37 +143,24 @@ export const scheduleTool = defineTool({
   execute: async (args, api, callContext) => {
     const action = args.action ?? "add";
     const items = (await api.snapshot(Schedules, api.conversationId, callContext))?.items ?? {};
-
-    if (action === "list") return result(formatSchedules(scheduleInfos(items), api.now()));
+    if (action === "list") return toolResult(formatSchedules(scheduleInfos(items), api.now()));
 
     const name = args.name?.trim();
-    if (!name) return result(`${action} needs a name.`, true);
+    if (!name) return toolResult(`${action} needs a name.`, true);
 
     if (action === "cancel") {
       const removed = await api.commit((tx) => removeSchedule(tx, api.conversationId, name), callContext);
-      return removed ? result(`Cancelled ${name}.`) : result(`No schedule named ${name}.`, true);
+      return removed ? toolResult(`Cancelled ${name}.`) : toolResult(`No schedule named ${name}.`, true);
     }
 
-    if (args.prompt === undefined) return result("add needs a prompt.", true);
-    const delay = parseDelay(args.delay ?? "");
-    if (delay === undefined) return result(`invalid delay "${args.delay ?? ""}"; use e.g. 30s, 2m, 1h`, true);
-    if (delay > MAX_DELAY_MS) return result("delay is too long (max 30 days)", true);
+    const planned = planSchedule({ ...args, name }, new Set(Object.keys(items)));
+    if (planned.isErr()) return fromResult(planned);
+    const { prompt, delayMs, everyMs } = planned.value;
 
-    const everyMs = args.every === undefined ? undefined : parseDelay(args.every);
-    if (args.every !== undefined && everyMs === undefined) {
-      return result(`invalid repeat "${args.every}"; use e.g. 15m, 1h`, true);
-    }
-    if (everyMs !== undefined && everyMs < MIN_REPEAT_MS) {
-      return result("a repeating schedule must be at least 10s apart", true);
-    }
-    if (Object.hasOwn(items, name)) {
-      return result(`"${name}" already exists; cancel it first or pick another name.`, true);
-    }
-
-    const prompt = args.prompt;
-    const at = api.now() + delay;
+    const at = api.now() + delayMs;
     await api.commit(async (tx) => {
       const doc = await tx.doc(Schedules, api.conversationId);
+      // A concurrent add of the same name: refuse rather than orphan a sleeping task.
       if (doc.items[name]) throw new Error(`schedule "${name}" already exists`);
       const taskId = await tx.createTask(
         Schedule,
@@ -149,10 +170,10 @@ export const scheduleTool = defineTool({
       doc.items[name] = { taskId, prompt, everyMs, nextAt: at };
     }, callContext);
 
-    return result(
+    return toolResult(
       everyMs === undefined
-        ? `Scheduled "${name}" in ${formatDuration(delay)}.`
-        : `Scheduled "${name}" every ${formatDuration(everyMs)}, first in ${formatDuration(delay)}.`,
+        ? `Scheduled "${name}" in ${formatDuration(delayMs)}.`
+        : `Scheduled "${name}" every ${formatDuration(everyMs)}, first in ${formatDuration(delayMs)}.`,
     );
   },
 });

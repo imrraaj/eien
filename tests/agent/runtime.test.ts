@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { Result } from "better-result";
 import type { Address, OutboundMessage } from "../../packages/io/src/index.ts";
 import { createModelsRegistry } from "../../packages/llm/src/index.ts";
 import type { Sandbox } from "../../packages/sandbox/src/index.ts";
@@ -48,6 +49,7 @@ function recordingOutbox() {
       send: async (to: Address, message: OutboundMessage) => {
         sent.push([to, message]);
         for (const wake of waiters.splice(0)) wake();
+        return Result.ok(undefined);
       },
     },
     /** Resolve once a message matching `predicate` has been sent. */
