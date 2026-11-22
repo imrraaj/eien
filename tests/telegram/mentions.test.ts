@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { groupGate, messageMentionsBot, stripMention } from "../../packages/gateway/src/mentions.ts";
+import { groupGate, messageMentionsBot, stripMention } from "../../packages/telegram/src/mentions.ts";
 
 const bot = "eienbot";
 const botId = 9_250_249_177;

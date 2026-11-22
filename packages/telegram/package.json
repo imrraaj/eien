@@ -1,0 +1,14 @@
+{
+  "name": "@eien/telegram",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@eien/io": "workspace:*",
+    "@eien/shared": "workspace:*",
+    "grammy": "^1.46.0"
+  }
+}

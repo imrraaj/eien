@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { splitMessage } from "../../packages/gateway/src/text.ts";
+import { splitMessage } from "../../packages/telegram/src/text.ts";
 
 describe("splitMessage", () => {
   test("returns short text as a single chunk", () => {
