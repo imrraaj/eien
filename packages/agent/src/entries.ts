@@ -1,27 +1,25 @@
-/** The text blocks of an assistant entry's model message, joined. Empty when there are none. */
-export function answerText(entry: unknown): string {
-  const model = (entry as { model?: unknown } | undefined)?.model;
-  if (!Array.isArray(model)) return "";
+import type { EntryRecord } from "@earendil-works/pi-durable";
 
-  return model
-    .flatMap((message) => {
-      const content = (message as { content?: unknown }).content;
-      return Array.isArray(content) ? content : [];
-    })
-    .flatMap((block) => {
-      const { type, text } = block as { type?: unknown; text?: unknown };
-      return type === "text" && typeof text === "string" ? [text] : [];
-    })
+/** The part of an entry this module reads; `EntryRecord` and typed entries both fit. */
+type ModelEntry = Pick<EntryRecord, "model">;
+type Message = NonNullable<EntryRecord["model"]>[number];
+type Block = Exclude<Message["content"], string>[number];
+
+function contentBlocks(entry: ModelEntry | undefined): readonly Block[] {
+  return (entry?.model ?? []).flatMap((message): readonly Block[] =>
+    typeof message.content === "string" ? [] : message.content,
+  );
+}
+
+/** The text blocks of an entry's model messages, joined. Empty when there are none. */
+export function answerText(entry: ModelEntry | undefined): string {
+  return contentBlocks(entry)
+    .flatMap((block) => (block.type === "text" ? [block.text] : []))
     .join("")
     .trim();
 }
 
-/** True when the assistant entry also called a tool: its text is progress chatter, not an answer. */
-export function callsTools(entry: unknown): boolean {
-  const model = (entry as { model?: unknown } | undefined)?.model;
-  if (!Array.isArray(model)) return false;
-  return model.some((message) => {
-    const content = (message as { content?: unknown }).content;
-    return Array.isArray(content) && content.some((block) => (block as { type?: unknown }).type === "toolCall");
-  });
+/** True when the entry also called a tool: its text is progress chatter, not an answer. */
+export function callsTools(entry: ModelEntry | undefined): boolean {
+  return contentBlocks(entry).some((block) => block.type === "toolCall");
 }
