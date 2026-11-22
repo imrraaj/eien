@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 export interface WebOptions {
   mcpUrl: string;
   exaApiKey?: string;
@@ -12,6 +14,19 @@ const PROTOCOL_VERSION = "2024-11-05";
 const CLIENT_NAME = "eien";
 const CLIENT_VERSION = "0.1.0";
 const MAX_RESULT_CHARS = 14_000;
+
+/** JSON-RPC response envelope; extra fields are ignored. */
+const RpcResponse = z.looseObject({
+  id: z.number().optional(),
+  result: z.unknown().optional(),
+  error: z.looseObject({ message: z.string().optional(), code: z.number().optional() }).optional(),
+});
+
+/** MCP `tools/call` result: text blocks plus an error flag. */
+const ToolCallResult = z.looseObject({
+  isError: z.boolean().optional(),
+  content: z.array(z.looseObject({ type: z.string(), text: z.string().optional() })).default([]),
+});
 
 interface McpSession {
   id: string;
@@ -40,14 +55,9 @@ function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
 }
 
 function unwrap(message: unknown, id: number): unknown {
-  if (typeof message !== "object" || message === null) {
-    throw new Error("invalid MCP response");
-  }
-  const envelope = message as {
-    id?: number;
-    result?: unknown;
-    error?: { message?: string; code?: number };
-  };
+  const parsed = RpcResponse.safeParse(message);
+  if (!parsed.success) throw new Error("invalid MCP response");
+  const envelope = parsed.data;
   if (envelope.id !== undefined && envelope.id !== id) {
     throw new Error(`MCP response id mismatch (${envelope.id} != ${id})`);
   }
@@ -75,8 +85,8 @@ async function parseRpcResponse(response: Response, id: number): Promise<unknown
 
   for (const event of events) {
     try {
-      const message = JSON.parse(event) as { id?: number };
-      if (message.id === id) return unwrap(message, id);
+      const message = RpcResponse.safeParse(JSON.parse(event));
+      if (message.success && message.data.id === id) return unwrap(message.data, id);
     } catch {
       // Ignore keepalive/non-JSON frames.
     }
@@ -179,22 +189,14 @@ async function callTool(
 }
 
 function resultText(result: unknown): { text: string; isError: boolean } {
-  if (typeof result !== "object" || result === null) {
-    return { text: "MCP returned an empty result", isError: true };
-  }
+  const parsed = ToolCallResult.safeParse(result);
+  if (!parsed.success) return { text: "MCP returned an invalid result", isError: true };
 
-  const payload = result as {
-    isError?: boolean;
-    content?: Array<{ type?: string; text?: string }>;
-  };
-
-  const text = (payload.content ?? [])
-    .filter((block) => block.type === "text" && typeof block.text === "string")
-    .map((block) => block.text)
+  const text = parsed.data.content
+    .flatMap((block) => (block.type === "text" && block.text !== undefined ? [block.text] : []))
     .join("\n\n")
     .trim();
-
-  return { text, isError: payload.isError === true };
+  return { text, isError: parsed.data.isError === true };
 }
 
 function truncate(text: string, limit = MAX_RESULT_CHARS): string {
