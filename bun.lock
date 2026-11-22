@@ -14,16 +14,32 @@
         "typescript": "^5.9.0",
       },
     },
-    "packages/gateway": {
-      "name": "@eien/gateway",
+    "packages/agent": {
+      "name": "@eien/agent",
       "version": "0.0.0",
       "dependencies": {
+        "@eien/io": "workspace:*",
         "@eien/llm": "workspace:*",
         "@eien/sandbox": "workspace:*",
         "@eien/shared": "workspace:*",
         "@eien/tools": "workspace:*",
-        "grammy": "^1.46.0",
       },
+    },
+    "packages/gateway": {
+      "name": "@eien/gateway",
+      "version": "0.0.0",
+      "dependencies": {
+        "@eien/agent": "workspace:*",
+        "@eien/io": "workspace:*",
+        "@eien/llm": "workspace:*",
+        "@eien/sandbox": "workspace:*",
+        "@eien/shared": "workspace:*",
+        "@eien/telegram": "workspace:*",
+      },
+    },
+    "packages/io": {
+      "name": "@eien/io",
+      "version": "0.0.0",
     },
     "packages/llm": {
       "name": "@eien/llm",
@@ -42,6 +58,15 @@
       "version": "0.0.0",
       "dependencies": {
         "zod": "^4.6.7",
+      },
+    },
+    "packages/telegram": {
+      "name": "@eien/telegram",
+      "version": "0.0.0",
+      "dependencies": {
+        "@eien/io": "workspace:*",
+        "@eien/shared": "workspace:*",
+        "grammy": "^1.46.0",
       },
     },
     "packages/tools": {
@@ -108,13 +133,19 @@
 
     "@earendil-works/pi-telemetry": ["@earendil-works/pi-telemetry@1.5.2", "", {}, "sha512-m+cumjIqNh1aMISi/9ttcG3ZOwIdriPbz/eMyWmRMJCGa/WcgY1RX4lrb7HvsHhSfI/JUeBESA4nOCr8C3y5ow=="],
 
+    "@eien/agent": ["@eien/agent@workspace:packages/agent"],
+
     "@eien/gateway": ["@eien/gateway@workspace:packages/gateway"],
+
+    "@eien/io": ["@eien/io@workspace:packages/io"],
 
     "@eien/llm": ["@eien/llm@workspace:packages/llm"],
 
     "@eien/sandbox": ["@eien/sandbox@workspace:packages/sandbox"],
 
     "@eien/shared": ["@eien/shared@workspace:packages/shared"],
+
+    "@eien/telegram": ["@eien/telegram@workspace:packages/telegram"],
 
     "@eien/tools": ["@eien/tools@workspace:packages/tools"],
 
