@@ -1,5 +1,6 @@
 import { createLlm, createModelsRegistry } from "@eien/llm";
 import { createLogger, loadEnv } from "@eien/shared";
+import { createSandbox, type SandboxConfig } from "@eien/sandbox";
 import { Bot, type Context } from "grammy";
 import { ACK_TEXT } from "./ack.ts";
 import {
@@ -92,7 +93,22 @@ async function main(): Promise<void> {
   const modelId = llm.modelId("main");
   const systemPrompt =
     env.SYSTEM_PROMPT ?? defaultSystemPrompt(env.SBX_NAME, env.SBX_WORKDIR);
-  const sandbox = { name: env.SBX_NAME };
+  const sandboxConfig: SandboxConfig =
+    env.SANDBOX_DRIVER === "ssh"
+      ? {
+          driver: "ssh",
+          name: env.SBX_NAME,
+          root: env.SBX_WORKDIR,
+          ssh: {
+            host: env.SANDBOX_SSH_HOST,
+            user: env.SANDBOX_SSH_USER,
+            port: env.SANDBOX_SSH_PORT,
+            keyPath: env.SANDBOX_SSH_KEY,
+            knownHostsPath: env.SANDBOX_SSH_KNOWN_HOSTS,
+          },
+        }
+      : { driver: "sbx", name: env.SBX_NAME, root: env.SBX_WORKDIR };
+  const sandbox = createSandbox(sandboxConfig);
 
   const runtime = await createAgentRuntime({
     env,
@@ -192,7 +208,7 @@ async function main(): Promise<void> {
       case "status":
         await ctx.reply(
           [
-            `sandbox: ${env.SBX_NAME}`,
+            `sandbox: ${sandbox.driver} (${sandbox.name}, ${sandbox.root})`,
             `workdir: ${env.SBX_WORKDIR}`,
             `model: ${modelId}`,
             `max turns/run: ${env.MAX_AGENT_STEPS}`,
@@ -367,7 +383,6 @@ async function main(): Promise<void> {
         const file = await ingestTelegramFile(
           ctx,
           sandbox,
-          env.SBX_WORKDIR,
           env.TELEGRAM_BOT_TOKEN ?? "",
         );
         if (!file) {
@@ -411,7 +426,7 @@ async function main(): Promise<void> {
 
   log.info("gateway starting", {
     model: modelId,
-    sandbox: env.SBX_NAME,
+    sandbox: `${sandbox.driver} (${sandbox.name}, ${sandbox.root})`,
     workdir: env.SBX_WORKDIR,
     allowedUsers: allowedUsers.size,
     storage: `${env.STATE_DIR}/harness`,

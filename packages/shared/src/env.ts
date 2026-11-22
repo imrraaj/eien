@@ -67,6 +67,13 @@ export const envSchema = z.object({
 
   SBX_NAME: textWithDefault("agent-1"),
   SBX_WORKDIR: textWithDefault("/work"),
+  /** "sbx" for host Docker Sandboxes, "ssh" for a sandbox container. */
+  SANDBOX_DRIVER: z.enum(["sbx", "ssh"]).default("sbx"),
+  SANDBOX_SSH_HOST: textWithDefault("sandbox"),
+  SANDBOX_SSH_USER: textWithDefault("agent"),
+  SANDBOX_SSH_PORT: intWithDefault(22),
+  SANDBOX_SSH_KEY: textWithDefault("/keys/id_ed25519"),
+  SANDBOX_SSH_KNOWN_HOSTS: textWithDefault("/keys/known_hosts"),
   MAX_AGENT_STEPS: z.preprocess(
     emptyToUndefined,
     z.coerce.number().int().min(1).max(100).default(100),

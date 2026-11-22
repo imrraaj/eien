@@ -22,7 +22,8 @@ Temporal orchestration is intentionally deferred.
 - [x] `subagent` workers are owned background conversations that report back
 - [x] Durable conversations and runs in JSONL storage (`state/harness`)
 - [x] Native steering: messages sent mid-run land after the current tool round
-- [ ] Schedules and cron jobs (next)
+- [x] Durable schedules (one-shot and repeating) with `/schedules` and `/unschedule`
+- [x] Single-container gateway deployment (`deploy/setup.sh`)
 - [ ] Postgres storage backend
 
 ## Quick start
@@ -55,7 +56,54 @@ polling, so no inbound ports are needed.
 `/stop` aborts the running turn and kills processes started under `/work`.
 Completed files are left in place.
 
-### Users
+## Docker deployment
+
+The gateway ships as one image. Docker Sandboxes stays on the **host**: `sbx`
+is a microVM manager (KVM + a per-user `sandboxd`), so the container gets the
+host CLI and its state directory instead of running its own sandbox.
+
+Host requirements: Docker Engine, and Docker Sandboxes installed for the same
+user that will run the container (`sbx ls` works without sudo).
+
+```bash
+cp .env.example .env     # fill in Telegram + LLM values
+./deploy/setup.sh        # bootstrap agent-1, build, start
+```
+
+`setup.sh` verifies Docker and `sbx`, creates the sandbox if missing, writes
+`deploy/compose.env` (`HOST_UID`, `HOST_GID`, `SBX_STATE_DIR`, `SBX_CLI_DIR`),
+and runs `docker compose -f docker-compose.bot.yml up -d --build`. Run it as
+the sandbox-owning user, not with sudo: `sandboxd.sock` is mode `0600`.
+
+The container mounts:
+
+| Host | Container | Why |
+|---|---|---|
+| `./state` | `/data` | durable conversations, schedules, `chats.json` |
+| `$XDG_STATE_HOME/sandboxes` | `/sbxstate/sandboxes` | `sandboxd` socket and state |
+| `/usr/lib/docker-sbx` (ro) | `/usr/lib/docker-sbx` | `sbx` CLI |
+
+It does **not** mount `/var/run/docker.sock`; the agent never has the host
+Docker API. It also runs as your UID, because the daemon socket is user-private.
+
+If the model server runs on the same host, point the bot at it with:
+
+```dotenv
+LLM_BASE_URL=http://host.docker.internal:9931/v1
+```
+
+`127.0.0.1` inside the container is the container itself. The compose file adds
+`host.docker.internal:host-gateway` for this.
+
+```bash
+docker compose --env-file deploy/compose.env -f docker-compose.bot.yml logs -f --tail=50
+./deploy/down.sh        # stop the gateway; sandbox and state are untouched
+```
+
+Upgrades: `git pull && ./deploy/setup.sh` rebuilds and restarts the container.
+SIGTERM stops grammY polling and Compose allows 30s before killing it.
+
+## Users
 
 `ALLOWED_TELEGRAM_USER_IDS` takes a comma-separated list of **numeric** Telegram
 user IDs:
@@ -181,6 +229,9 @@ Egress is **open** by default while testing (`SANDBOX_ALLOW_ALL=1`). Set
 
 ```
 docker-compose.yml            Temporal + Postgres + UI (unused by the MVP bot)
+docker-compose.bot.yml        gateway-only deployment (host sbx)
+Dockerfile                    gateway image (Bun + sources)
+deploy/                       host setup, compose env, teardown
 docker/initdb/                first-boot SQL (creates the `agent` DB)
 docker/dynamicconfig/         Temporal dev dynamic config
 packages/shared/              env schema, logger

@@ -1,26 +1,5 @@
 import { spawn } from "node:child_process";
-
-export interface SandboxConfig {
-  /** sbx sandbox name, e.g. "agent-1". */
-  name: string;
-}
-
-export interface ExecOptions {
-  /** Directory inside the sandbox. */
-  cwd?: string;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  stdin?: string;
-  /** Cap on captured output before middle-truncation. */
-  maxOutputBytes?: number;
-}
-
-export interface ExecResult {
-  output: string;
-  exitCode: number;
-  timedOut: boolean;
-  truncated: boolean;
-}
+import type { CopyOptions, ExecOptions, ExecResult } from "./types.ts";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const RAW_CAPTURE_BYTES = 1_048_576;
@@ -43,20 +22,16 @@ function truncateMiddle(text: string, limit = OUTPUT_BYTES): { text: string; tru
 }
 
 /**
- * Run a command inside the sbx sandbox as the default user.
- * Output is captured, middle-truncated, and returned with the exit code.
+ * Spawn a command, capture stdout/stderr, middle-truncate, and report the exit
+ * code. Shared by every backend; nothing here knows what the command means.
  */
-export function sbxExec(
-  sandbox: SandboxConfig,
-  command: string,
+export function runProcess(
+  bin: string,
+  args: string[],
   options: ExecOptions = {},
 ): Promise<ExecResult> {
-  const args = ["exec"];
-  if (options.cwd) args.push("-w", options.cwd);
-  args.push(sandbox.name, "bash", "-lc", command);
-
   return new Promise((resolve, reject) => {
-    const child = spawn("sbx", args, { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"] });
 
     const chunks: Buffer[] = [];
     let captured = 0;
@@ -115,5 +90,42 @@ export function sbxExec(
 
     if (options.stdin !== undefined) child.stdin.end(options.stdin);
     else child.stdin.end();
+  });
+}
+
+/** Run a copy command, surfacing stderr when it fails. */
+export function runCopy(
+  bin: string,
+  args: string[],
+  options: CopyOptions = {},
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, args, { stdio: ["ignore", "ignore", "pipe"] });
+
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+
+    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    const onAbort = () => child.kill("SIGKILL");
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
+    };
+
+    child.on("error", (error) => {
+      cleanup();
+      reject(error);
+    });
+
+    child.on("close", (code) => {
+      cleanup();
+      if (code === 0) resolve();
+      else reject(new Error(stderr.trim() || `${bin} failed with exit ${code}`));
+    });
   });
 }

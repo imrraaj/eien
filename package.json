@@ -15,6 +15,8 @@
     "check": "bun run typecheck && bun test",
     "test": "bun test",
     "bot": "bun packages/gateway/src/index.ts",
+    "deploy": "./deploy/setup.sh",
+    "undeploy": "./deploy/down.sh",
     "bot:dev": "bun --watch packages/gateway/src/index.ts",
     "up": "docker compose up -d",
     "down": "docker compose down",

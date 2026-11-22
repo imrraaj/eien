@@ -26,3 +26,5 @@ coverage/
 
 # runtime state
 state/
+deploy/compose.env
+deploy/keys/

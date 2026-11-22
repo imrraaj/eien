@@ -1,6 +1,7 @@
 import { posix } from "node:path";
-import { sbxExec, shellQuote, type SandboxConfig } from "./exec.ts";
 import { resolveInRoot } from "./paths.ts";
+import { shellQuote } from "./process.ts";
+import type { Sandbox } from "./types.ts";
 
 export interface ReadOptions {
   offset?: number;
@@ -17,18 +18,16 @@ export interface ReadResult {
 }
 
 export async function readText(
-  sandbox: SandboxConfig,
-  root: string,
+  sandbox: Sandbox,
   path: string,
   options: ReadOptions = {},
 ): Promise<ReadResult> {
-  const absolute = resolveInRoot(root, path);
+  const absolute = resolveInRoot(sandbox.root, path);
   const start = Math.max(1, Math.trunc(options.offset ?? 1));
   const limit = Math.min(2_000, Math.max(1, Math.trunc(options.limit ?? 400)));
   const end = start + limit - 1;
 
-  const result = await sbxExec(
-    sandbox,
+  const result = await sandbox.exec(
     `test -f ${shellQuote(absolute)} || { echo "not a readable file: ${absolute.replaceAll('"', '\\"')}" >&2; exit 2; }; sed -n '${start},${end}p' -- ${shellQuote(absolute)}`,
     { signal: options.signal, timeoutMs: 30_000 },
   );
@@ -47,16 +46,14 @@ export async function readText(
 }
 
 export async function writeText(
-  sandbox: SandboxConfig,
-  root: string,
+  sandbox: Sandbox,
   path: string,
   content: string,
   options: { signal?: AbortSignal } = {},
 ): Promise<string> {
-  const absolute = resolveInRoot(root, path);
+  const absolute = resolveInRoot(sandbox.root, path);
   const dir = posix.dirname(absolute);
-  const result = await sbxExec(
-    sandbox,
+  const result = await sandbox.exec(
     `mkdir -p -- ${shellQuote(dir)} && cat > ${shellQuote(absolute)}`,
     { stdin: content, signal: options.signal, timeoutMs: 30_000 },
   );
@@ -78,8 +75,7 @@ export interface EditResult {
  * Ambiguous or missing matches fail so the model must be precise.
  */
 export async function editText(
-  sandbox: SandboxConfig,
-  root: string,
+  sandbox: Sandbox,
   path: string,
   oldText: string,
   newText: string,
@@ -87,7 +83,7 @@ export async function editText(
 ): Promise<EditResult> {
   if (!oldText) throw new Error("old text must not be empty");
 
-  const current = await readText(sandbox, root, path, {
+  const current = await readText(sandbox, path, {
     limit: 20_000,
     signal: options.signal,
   });
@@ -110,6 +106,6 @@ export async function editText(
   const line = current.text.slice(0, index).split("\n").length;
   const updated = `${current.text.slice(0, index)}${newText}${current.text.slice(index + oldText.length)}`;
 
-  await writeText(sandbox, root, current.path, updated, options);
+  await writeText(sandbox, current.path, updated, options);
   return { path: current.path, replacements: 1, line };
 }

@@ -1,13 +1,10 @@
-export { sbxExec, shellQuote, type ExecOptions, type ExecResult, type SandboxConfig } from "./exec.ts";
-export {
-  copyFromSandbox,
-  copyToSandbox,
-  statSandboxFile,
-  type CopyOptions,
-  type RemoteFileInfo,
-} from "./copy.ts";
+export { createSandbox } from "./factory.ts";
+export { SbxSandbox, sbxExecArgs, sbxRemote } from "./sbx.ts";
+export { SshSandbox, scpArgs, sshArgs, sshCommand, sshRemote, sshScript } from "./ssh.ts";
+export { runCopy, runProcess, shellQuote } from "./process.ts";
 export { resolveInRoot } from "./paths.ts";
-export { killSandboxWork, type KillOptions } from "./kill.ts";
+export { statSandboxFile } from "./copy.ts";
+export { killSandboxWork } from "./kill.ts";
 export {
   editText,
   readText,
@@ -16,3 +13,13 @@ export {
   type ReadOptions,
   type ReadResult,
 } from "./files.ts";
+export type {
+  CopyOptions,
+  ExecOptions,
+  ExecResult,
+  KillOptions,
+  RemoteFileInfo,
+  Sandbox,
+  SandboxConfig,
+  SshOptions,
+} from "./types.ts";

@@ -26,9 +26,8 @@ import {
   killSandboxWork,
   readText,
   resolveInRoot,
-  sbxExec,
   writeText,
-  type SandboxConfig,
+  type Sandbox,
 } from "@eien/sandbox";
 import { runWebTool } from "@eien/tools";
 import type { Context } from "grammy";
@@ -47,7 +46,7 @@ export interface RuntimeOptions {
   system: string;
   storageDir: string;
   chatMapPath: string;
-  sandbox: SandboxConfig;
+  sandbox: Sandbox;
   log: Logger;
   /** Deliver an agent answer to a chat, optionally quoting a message. */
   onAnswer: (chatId: string, text: string, replyTo?: number) => Promise<void>;
@@ -322,10 +321,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
     parameters: obj({ command: str(), timeoutSec: opt(num()) }),
     execute: async (args) => {
       const seconds = Math.min(900, Math.max(1, Math.trunc(args.timeoutSec ?? 120)));
-      const result = await sbxExec(sandbox, args.command, {
-        cwd: env.SBX_WORKDIR,
-        timeoutMs: seconds * 1_000,
-      });
+      const result = await sandbox.exec(args.command, { timeoutMs: seconds * 1_000 });
       const suffix = result.timedOut ? `\n(command timed out after ${seconds}s)` : "";
       return toolResult(
         `exit code: ${result.exitCode}\n${result.output.trim() || "(no output)"}${suffix}`,
@@ -339,7 +335,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
     description: "Read a UTF-8 text file from the sandbox workspace.",
     parameters: obj({ path: str(), offset: opt(num()), limit: opt(num()) }),
     execute: async (args) => {
-      const result = await readText(sandbox, env.SBX_WORKDIR, args.path, {
+      const result = await readText(sandbox, args.path, {
         offset: args.offset,
         limit: args.limit,
       });
@@ -354,7 +350,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
     description: "Create or overwrite a UTF-8 text file in the sandbox workspace.",
     parameters: obj({ path: str(), content: str() }),
     execute: async (args) =>
-      toolResult(await writeText(sandbox, env.SBX_WORKDIR, args.path, args.content)),
+      toolResult(await writeText(sandbox, args.path, args.content)),
   });
 
   const edit = defineTool({
@@ -362,7 +358,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
     description: "Replace exactly one occurrence of `old` with `new` in a sandbox file.",
     parameters: obj({ path: str(), old: str(), new: str() }),
     execute: async (args) => {
-      const result = await editText(sandbox, env.SBX_WORKDIR, args.path, args.old, args.new);
+      const result = await editText(sandbox, args.path, args.old, args.new);
       return toolResult(`replaced 1 occurrence at ${result.path}:${result.line}`);
     },
   });
@@ -375,7 +371,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
     execute: async (args, api) => {
       const telegram = contexts.get(api.conversationId);
       if (!telegram) return toolResult("sending files is not available in this chat", true);
-      const remote = resolveInRoot(env.SBX_WORKDIR, args.path);
+      const remote = resolveInRoot(sandbox.root, args.path);
       return toolResult(
         await sendSandboxFile(telegram, sandbox, {
           path: remote,
@@ -681,7 +677,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
       agent.model?.provider !== provider ||
       agent.model?.modelId !== options.modelId ||
       agent.instructions !== options.system ||
-      agent.cwd !== env.SBX_WORKDIR ||
+      agent.cwd !== sandbox.root ||
       agent.maxTurns !== env.MAX_AGENT_STEPS;
     if (!stale) return;
 
@@ -689,7 +685,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
       {
         model: { provider, modelId: options.modelId },
         instructions: options.system,
-        cwd: env.SBX_WORKDIR,
+        cwd: sandbox.root,
         maxTurns: env.MAX_AGENT_STEPS,
       },
       CHORD,
@@ -717,7 +713,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
           model: { provider, modelId: options.modelId },
           extensions: [toolsExtension, subagentExtension],
           instructions: options.system,
-          cwd: env.SBX_WORKDIR,
+          cwd: sandbox.root,
           maxTurns: env.MAX_AGENT_STEPS,
         },
       },
@@ -805,7 +801,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
     async abort(chatId) {
       const conversation = await conversationFor(chatId);
       await conversation.abort(CHORD).catch(() => undefined);
-      await killSandboxWork(sandbox, env.SBX_WORKDIR).catch(() => 0);
+      await killSandboxWork(sandbox).catch(() => 0);
     },
 
     async reset(chatId) {

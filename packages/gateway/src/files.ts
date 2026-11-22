@@ -3,12 +3,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
-  copyFromSandbox,
-  copyToSandbox,
-  sbxExec,
   shellQuote,
   statSandboxFile,
-  type SandboxConfig,
+  type Sandbox,
 } from "@eien/sandbox";
 import type { OutgoingFile } from "@eien/tools";
 import { InputFile, type Context } from "grammy";
@@ -52,7 +49,7 @@ async function uploadHostFile(
 /** Copy a workspace file out of the sandbox and upload it to the chat. */
 export async function sendSandboxFile(
   ctx: Context,
-  sandbox: SandboxConfig,
+  sandbox: Sandbox,
   file: OutgoingFile,
 ): Promise<string> {
   const info = await statSandboxFile(sandbox, file.path);
@@ -70,7 +67,7 @@ export async function sendSandboxFile(
   const local = join(dir, name);
 
   try {
-    await copyFromSandbox(sandbox, file.path, local);
+    await sandbox.copyOut(file.path, local);
     await uploadHostFile(ctx, local, name, file.caption);
     return `sent ${name} (${formatBytes(info.size)}) to the chat`;
   } finally {
@@ -152,8 +149,7 @@ function telegramFileRef(ctx: Context): TelegramFileRef | undefined {
  */
 export async function ingestTelegramFile(
   ctx: Context,
-  sandbox: SandboxConfig,
-  root: string,
+  sandbox: Sandbox,
   botToken: string,
 ): Promise<IngestedFile | undefined> {
   const ref = telegramFileRef(ctx);
@@ -170,18 +166,18 @@ export async function ingestTelegramFile(
   const bytes = Buffer.from(await response.arrayBuffer());
   const dir = await mkdtemp(join(tmpdir(), "eien-in-"));
   const local = join(dir, ref.name);
-  const remoteDir = `${root.replace(/\/+$/, "")}/uploads`;
+  const remoteDir = `${sandbox.root.replace(/\/+$/, "")}/uploads`;
   const remote = `${remoteDir}/${Date.now().toString(36)}-${ref.name}`;
 
   try {
     await writeFile(local, bytes);
-    const mkdir = await sbxExec(sandbox, `mkdir -p ${shellQuote(remoteDir)}`, {
+    const mkdir = await sandbox.exec(`mkdir -p ${shellQuote(remoteDir)}`, {
       timeoutMs: 15_000,
     });
     if (mkdir.exitCode !== 0) {
       throw new Error(mkdir.output.trim() || "could not create the uploads directory");
     }
-    await copyToSandbox(sandbox, local, remote);
+    await sandbox.copyIn(local, remote);
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
