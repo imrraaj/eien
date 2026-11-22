@@ -6,8 +6,8 @@ import { TaggedError } from "better-result";
  * means nothing is registered for the address.
  */
 export class DeliveryFailed extends TaggedError("DeliveryFailed")<{
-  service: string;
-  reason: "too_large" | "unsupported" | "failed" | "no_service";
-  message: string;
-  cause?: unknown;
+    service: string;
+    reason: "too_large" | "unsupported" | "failed" | "no_service";
+    message: string;
+    cause?: unknown;
 }> {}

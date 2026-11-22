@@ -5,21 +5,21 @@ export class InvalidPath extends TaggedError("InvalidPath")<{ path: string; mess
 
 /** A helper command inside the sandbox exited non-zero. */
 export class CommandFailed extends TaggedError("CommandFailed")<{
-  exitCode: number;
-  output: string;
-  message: string;
+    exitCode: number;
+    output: string;
+    message: string;
 }> {}
 
 /** `editText` refused to edit. */
 export class EditFailed extends TaggedError("EditFailed")<{
-  path: string;
-  reason: "empty" | "not_found" | "ambiguous" | "too_large";
-  message: string;
+    path: string;
+    reason: "empty" | "not_found" | "ambiguous" | "too_large";
+    message: string;
 }> {}
 
 export type SandboxError = InvalidPath | CommandFailed | EditFailed;
 
 /** `CommandFailed` from a non-zero exit, using the command's output as the message when it has one. */
 export function commandFailed(exitCode: number, output: string, fallback: string): CommandFailed {
-  return new CommandFailed({ exitCode, output, message: output.trim() || `${fallback} (exit ${exitCode})` });
+    return new CommandFailed({ exitCode, output, message: output.trim() || `${fallback} (exit ${exitCode})` });
 }

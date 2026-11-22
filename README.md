@@ -37,7 +37,7 @@ Adding a service means implementing one or both interfaces and registering it in
 `packages/gateway/src/index.ts`:
 
 ```ts
-outputs.add(web);     // before the runtime opens, so its prompt hint applies
+outputs.add(web); // before the runtime opens, so its prompt hint applies
 await inputs.add(web);
 ```
 
@@ -71,16 +71,16 @@ Validated by `packages/shared/src/env.ts`; empty values count as unset. `.env`
 is gitignored and `.env.example` holds placeholders only. Secrets stay in the
 gateway process, never in prompts, tool results, or the sandbox.
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `STATE_DIR` | `state` | holds `eien.sqlite` |
-| `MAX_AGENT_STEPS` | `100` | model turns per run (hard cap 100) |
-| `SOUL_PATH` | bundled `SOUL.md` | persona file |
-| `SYSTEM_PROMPT` | unset | replaces persona and operating manual entirely |
-| `SANDBOX_DRIVER` | `sbx` | `sbx` (host Docker Sandboxes) or `ssh` (container) |
-| `SBX_NAME`, `SBX_WORKDIR` | `agent-1`, `/work` | sandbox name and workspace |
-| `EXA_MCP_URL`, `EXA_API_KEY` | Exa hosted MCP, unset | web tools; the key only raises limits |
-| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| Variable                     | Default               | Purpose                                            |
+| ---------------------------- | --------------------- | -------------------------------------------------- |
+| `STATE_DIR`                  | `state`               | holds `eien.sqlite`                                |
+| `MAX_AGENT_STEPS`            | `100`                 | model turns per run (hard cap 100)                 |
+| `SOUL_PATH`                  | bundled `SOUL.md`     | persona file                                       |
+| `SYSTEM_PROMPT`              | unset                 | replaces persona and operating manual entirely     |
+| `SANDBOX_DRIVER`             | `sbx`                 | `sbx` (host Docker Sandboxes) or `ssh` (container) |
+| `SBX_NAME`, `SBX_WORKDIR`    | `agent-1`, `/work`    | sandbox name and workspace                         |
+| `EXA_MCP_URL`, `EXA_API_KEY` | Exa hosted MCP, unset | web tools; the key only raises limits              |
+| `LOG_LEVEL`                  | `info`                | `debug`, `info`, `warn`, `error`                   |
 
 ## Using it
 
@@ -124,24 +124,24 @@ prompt hint.
 
 ## Tools
 
-| Tool | Runs where | Purpose |
-|---|---|---|
-| `bash`, `read`, `write`, `edit` | sandbox | coding work in `/work` (paths confined there) |
-| `send_file` | sandbox to chat | send a workspace file to the current chat |
-| `web_search`, `web_fetch` | host | current information via Exa's hosted MCP |
-| `subagent` | host | persistent background workers |
-| `schedule` | host | durable one-shot or repeating timers |
+| Tool                            | Runs where      | Purpose                                       |
+| ------------------------------- | --------------- | --------------------------------------------- |
+| `bash`, `read`, `write`, `edit` | sandbox         | coding work in `/work` (paths confined there) |
+| `send_file`                     | sandbox to chat | send a workspace file to the current chat     |
+| `web_search`, `web_fetch`       | host            | current information via Exa's hosted MCP      |
+| `subagent`                      | host            | persistent background workers                 |
+| `schedule`                      | host            | durable one-shot or repeating timers          |
 
 Web and repo content is treated as untrusted data by the prompt.
 
 ### Subagents
 
-| Action | Effect |
-|---|---|
-| `spawn` (name, message) | creates a child conversation and returns at once |
-| `send` (name, message) | steers a worker, or with `followUp: true` queues after its current answer |
-| `stop` (name) | aborts the worker's current run |
-| `status` (name?) | working or idle |
+| Action                  | Effect                                                                    |
+| ----------------------- | ------------------------------------------------------------------------- |
+| `spawn` (name, message) | creates a child conversation and returns at once                          |
+| `send` (name, message)  | steers a worker, or with `followUp: true` queues after its current answer |
+| `stop` (name)           | aborts the worker's current run                                           |
+| `status` (name?)        | working or idle                                                           |
 
 A durable reporter posts each worker answer back to the main conversation, and
 the main agent relays it. Workers survive restarts, have their own step budget,

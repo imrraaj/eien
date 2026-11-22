@@ -2,7 +2,7 @@ import type { ToolExecutionResult } from "@earendil-works/pi-durable";
 import type { Result } from "better-result";
 
 export function toolResult(text: string, isError = false): ToolExecutionResult {
-  return { output: [{ type: "text", text }], isError };
+    return { output: [{ type: "text", text }], isError };
 }
 
 /**
@@ -11,8 +11,8 @@ export function toolResult(text: string, isError = false): ToolExecutionResult {
  * reports them as tool errors on its own.
  */
 export function fromResult(result: Result<string, { message: string }>): ToolExecutionResult {
-  return result.match({
-    ok: (text) => toolResult(text),
-    err: (error) => toolResult(error.message, true),
-  });
+    return result.match({
+        ok: (text) => toolResult(text),
+        err: (error) => toolResult(error.message, true),
+    });
 }
