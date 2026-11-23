@@ -1,572 +1,143 @@
-import { createLlm, type Message } from "@eien/llm";
-import { agentTools, runAgentTool, type SpawnInput } from "@eien/tools";
-import { createLogger, loadEnv } from "@eien/shared";
-import { killSandboxWork } from "@eien/sandbox";
-import { Bot, type Context } from "grammy";
-import { assistantText, runAgentTurn } from "./agent.ts";
-import { ackText } from "./ack.ts";
-import {
-  describeIngestedFile,
-  ingestTelegramFile,
-  sendSandboxFile,
-} from "./files.ts";
-import { ConversationStore } from "./history.ts";
-import { groupGate } from "./mentions.ts";
-import {
-  htmlToPlainText,
-  TELEGRAM_CHUNK_LIMIT,
-  toTelegramChunks,
-} from "./markdown.ts";
-import { createLimiter } from "./limiter.ts";
-import { defaultSystemPrompt } from "./prompt.ts";
-import { Steering } from "./steering.ts";
-import { splitMessage } from "./text.ts";
+import { buildInstructions, createAgentRuntime, formatSchedules, loadSoul, operatingManual } from "@eien/agent";
+import { InputHub, OutputRouter, type Address, type InboundEvent } from "@eien/io";
+import { createModelsRegistry, resolveModelId } from "@eien/llm";
+import { createSandbox, type SandboxConfig } from "@eien/sandbox";
+import { createLogger, loadEnv, type Env } from "@eien/shared";
+import { createTelegramService } from "@eien/telegram";
 
 const MAX_INPUT_CHARS = 8_000;
-/** Send an acknowledgement if the turn is still running after this long. */
-const ACK_DELAY_MS = 10_000;
 
-function errorText(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
+const HELP = [
+    "Send me a task; I work in the sandbox with bash, read, write, and edit.",
+    "",
+    "/reset: clear this chat's context",
+    "/schedules: list reminders and repeating tasks",
+    "/unschedule <name>: cancel one",
+    "/model: show the active model",
+    "/status: sandbox and limits",
+    "/help: this message",
+].join("\n");
 
-function startTyping(ctx: Context): () => void {
-  const send = () => {
-    void ctx.replyWithChatAction("typing").catch(() => undefined);
-  };
-  send();
-  const timer = setInterval(send, 4_500);
-  return () => clearInterval(timer);
-}
-
-async function replyInChunks(ctx: Context, text: string): Promise<void> {
-  for (const chunk of toTelegramChunks(text, TELEGRAM_CHUNK_LIMIT)) {
-    try {
-      await ctx.reply(chunk, { parse_mode: "HTML" });
-    } catch {
-      // Telegram rejected the markup: resend as readable plain text.
-      for (const plain of splitMessage(htmlToPlainText(chunk))) {
-        await ctx.reply(plain);
-      }
-    }
-  }
+function sandboxConfig(env: Env): SandboxConfig {
+    if (env.SANDBOX_DRIVER === "sbx") return { driver: "sbx", name: env.SBX_NAME, root: env.SBX_WORKDIR };
+    return {
+        driver: "ssh",
+        name: env.SBX_NAME,
+        root: env.SBX_WORKDIR,
+        ssh: {
+            host: env.SANDBOX_SSH_HOST,
+            user: env.SANDBOX_SSH_USER,
+            port: env.SANDBOX_SSH_PORT,
+            keyPath: env.SANDBOX_SSH_KEY,
+            knownHostsPath: env.SANDBOX_SSH_KNOWN_HOSTS,
+        },
+    };
 }
 
 async function main(): Promise<void> {
-  const env = loadEnv();
-  const log = createLogger({
-    level: env.LOG_LEVEL,
-    bindings: { service: "gateway" },
-  });
-
-  if (!env.TELEGRAM_BOT_TOKEN) {
-    throw new Error(
-      "TELEGRAM_BOT_TOKEN is not set. Add it to .env before starting the gateway.",
-    );
-  }
-
-  const allowedUsers = new Set(env.ALLOWED_TELEGRAM_USER_IDS);
-  if (allowedUsers.size === 0) {
-    throw new Error(
-      "ALLOWED_TELEGRAM_USER_IDS is empty. Set your numeric Telegram user ID to lock the bot down.",
-    );
-  }
-
-  const llm = createLlm(env);
-  const modelId = llm.modelId("main");
-  const systemPrompt =
-    env.SYSTEM_PROMPT ?? defaultSystemPrompt(env.SBX_NAME, env.SBX_WORKDIR);
-  const sandbox = { name: env.SBX_NAME };
-  const history = new ConversationStore();
-  /** In-flight turn per conversation, so `/stop` can abort it. */
-  const running = new Map<string, AbortController>();
-  const steering = new Steering();
-  const limitWorkers = createLimiter(env.MAX_CONCURRENT_WORKERS);
-  let workerSeq = 0;
-  const workerTools = agentTools.filter((tool) => tool.name !== "spawn_agent");
-  const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
-
-  bot.use(async (ctx, next) => {
-    const telegramId = ctx.from?.id;
-    if (telegramId === undefined || !allowedUsers.has(String(telegramId))) {
-      log.warn("blocked non-allowlisted user", {
-        telegramUserId: telegramId,
-        chatType: ctx.chat?.type,
-      });
-      return;
+    const env = loadEnv();
+    const log = createLogger({ level: env.LOG_LEVEL, bindings: { service: "gateway" } });
+    if (!env.TELEGRAM_BOT_TOKEN) throw new Error("TELEGRAM_BOT_TOKEN is not set.");
+    if (env.ALLOWED_TELEGRAM_USER_IDS.length === 0) {
+        throw new Error("ALLOWED_TELEGRAM_USER_IDS is empty. Set your numeric Telegram user ID to lock the bot down.");
     }
-    await next();
-  });
 
-  function workerSystemPrompt(cwd: string): string {
-    return [
-      "You are a worker agent for eien, running inside a sandbox VM.",
-      `The workspace root is ${env.SBX_WORKDIR}; start in ${cwd}.`,
-      "Complete the brief fully and autonomously. Do not ask questions; report a blocker instead.",
-      "Use your tools for all work. Keep commands non-interactive and bounded.",
-      "Do not spawn more workers.",
-      "Finish with a short report: what you did, files touched, how you verified it, and anything the caller must know.",
-      "Reply concisely; the caller does not see your intermediate output.",
-    ].join("\n");
-  }
+    const modelId = resolveModelId(env);
+    const sandbox = createSandbox(sandboxConfig(env));
+    const storagePath = `${env.STATE_DIR}/eien.sqlite`;
+    const base =
+        env.SYSTEM_PROMPT ?? `${await loadSoul(env.SOUL_PATH)}\n\n${operatingManual(sandbox.name, sandbox.root)}`;
 
-  /** Run a nested worker turn; only its final report reaches the caller. */
-  async function spawnAgent(
-    ctx: Context,
-    conversationId: string,
-    parentSignal: AbortSignal,
-    input: SpawnInput,
-  ): Promise<string> {
-    return limitWorkers(async () => {
-      if (parentSignal.aborted) throw new Error("the calling turn was stopped");
-
-      const worker = (workerSeq += 1);
-      const startedAt = Date.now();
-      log.info("worker start", { conversationId, worker, cwd: input.cwd });
-
-      const result = await runAgentTurn({
-        llm,
-        messages: [{ role: "user", content: input.task, timestamp: Date.now() }],
-        system: workerSystemPrompt(input.cwd),
-        tools: workerTools,
-        maxSteps: input.maxSteps,
-        timeoutMs: env.LLM_TIMEOUT_MS,
-        sessionId: `telegram-${conversationId}-worker-${worker}`,
-        signal: parentSignal,
-        executeTool: (call) =>
-          runAgentTool(call, {
-            sandbox,
-            root: env.SBX_WORKDIR,
-            web: { mcpUrl: env.EXA_MCP_URL, exaApiKey: env.EXA_API_KEY },
-            sendFile: (file) => sendSandboxFile(ctx, sandbox, file),
-            signal: parentSignal,
-          }),
-        onToolCall: (call, toolResult) => {
-          log.info("worker tool", {
-            conversationId,
-            worker,
-            tool: call.name,
-            isError: toolResult.isError,
-            ms: toolResult.ms,
-          });
-        },
-      });
-
-      log.info("worker done", {
-        conversationId,
-        worker,
-        ms: Date.now() - startedAt,
-        aborted: result.aborted === true,
-      });
-
-      const text = result.text.trim();
-      if (result.aborted) return `worker stopped before finishing.\n${text}`.trim();
-      return text.slice(0, 6_000) || "(worker finished without a report)";
+    // Services register before the runtime opens, so reattached chats get their prompt hints.
+    const outputs = new OutputRouter();
+    const telegram = createTelegramService({
+        token: env.TELEGRAM_BOT_TOKEN,
+        allowedUsers: new Set(env.ALLOWED_TELEGRAM_USER_IDS),
+        log,
     });
-  }
+    outputs.add(telegram);
 
-  async function runTurn(
-    ctx: Context,
-    conversationId: string,
-    messages: Message[],
-    signal: AbortSignal,
-    onProgress?: () => void,
-  ): Promise<{ messages: Message[]; text: string; aborted?: boolean }> {
-    return runAgentTurn({
-      llm,
-      messages,
-      system: systemPrompt,
-      tools: agentTools,
-      maxSteps: env.MAX_AGENT_STEPS,
-      timeoutMs: env.LLM_TIMEOUT_MS,
-      sessionId: `telegram-${conversationId}`,
-      signal,
-      onToolStart: () => onProgress?.(),
-      takePending: () => steering.take(conversationId),
-      executeTool: (call) =>
-        runAgentTool(call, {
-          sandbox,
-          root: env.SBX_WORKDIR,
-          web: { mcpUrl: env.EXA_MCP_URL, exaApiKey: env.EXA_API_KEY },
-          sendFile: (file) => sendSandboxFile(ctx, sandbox, file),
-          spawnAgent: (input) => spawnAgent(ctx, conversationId, signal, input),
-          signal,
-        }),
-      onToolCall: (call, result) => {
-        log.info("tool call", {
-          conversationId,
-          tool: call.name,
-          isError: result.isError,
-          ms: result.ms,
-        });
-      },
+    const runtime = await createAgentRuntime({
+        storagePath,
+        models: createModelsRegistry(env),
+        modelId,
+        maxTurns: env.MAX_AGENT_STEPS,
+        sandbox,
+        web: { mcpUrl: env.EXA_MCP_URL, exaApiKey: env.EXA_API_KEY },
+        outbox: outputs,
+        instructions: (service) => buildInstructions(base, outputs.promptHint(service)),
+        log,
     });
-  }
 
-  async function handleCommand(
-    ctx: Context,
-    text: string,
-    conversationId: string,
-  ): Promise<void> {
-    const command = text.split(/\s+/)[0]?.slice(1).split("@")[0] ?? "";
+    async function reply(to: Address, text: string): Promise<void> {
+        const sent = await outputs.send(to, { kind: "text", text });
+        if (sent.isErr()) log.warn("could not reply", { to, error: sent.error });
+    }
 
-    switch (command) {
-      case "start":
-        await ctx.reply(
-          `Hi. I am eien, running inside sandbox "${env.SBX_NAME}". Send me a coding task.`,
-        );
-        return;
-      case "help":
-        await ctx.reply(
-          [
-            "Send me a coding task; I will use bash/read/write/edit in the sandbox.",
-            "",
-            "/reset — clear this chat's context",
-            "/stop — abort the running task and report progress",
-            "/model — show the active model",
-            "/status — sandbox and limits",
-            "/id — show chat and user IDs",
-            "/help — this message",
-          ].join("\n"),
-        );
-        return;
-      case "reset":
-        history.reset(conversationId);
-        await ctx.reply("Context cleared.");
-        return;
-      case "stop":
-      case "cancel": {
-        const controller = running.get(conversationId);
-        if (!controller) {
-          await ctx.reply("Nothing is running right now.");
-          return;
+    async function command(from: Address, name: string, args: readonly string[]): Promise<void> {
+        switch (name) {
+            case "start":
+            case "help":
+                return reply(from, HELP);
+            case "reset":
+                await runtime.reset(from);
+                return reply(from, "Context cleared.");
+            case "schedules":
+                return reply(from, formatSchedules(await runtime.schedules(from), Date.now()));
+            case "unschedule": {
+                const target = args[0];
+                if (!target) return reply(from, "Usage: /unschedule <name>");
+                const cancelled = await runtime.cancelSchedule(from, target);
+                return reply(from, cancelled ? `Cancelled "${target}".` : `No schedule named "${target}".`);
+            }
+            case "model":
+                return reply(from, `Model: ${modelId}`);
+            case "status":
+                return reply(
+                    from,
+                    [
+                        `sandbox: ${sandbox.driver} (${sandbox.name}, ${sandbox.root})`,
+                        `model: ${modelId}`,
+                        `max turns/run: ${env.MAX_AGENT_STEPS}`,
+                        `storage: ${storagePath}`,
+                    ].join("\n"),
+                );
+            default:
+                return reply(from, "Unknown command. Try /help.");
         }
-        await ctx.reply("Stopping…");
-        controller.abort();
-        const dropped = steering.clear(conversationId);
-        const killed = await killSandboxWork(sandbox, env.SBX_WORKDIR).catch(() => 0);
-        log.info("turn stopped", { conversationId, killed, dropped });
-        return;
-      }
-      case "model":
-        await ctx.reply(`Model: ${modelId}`);
-        return;
-      case "id":
-        await ctx.reply(
-          [
-            `chat: ${ctx.chat?.id ?? "unknown"}`,
-            `type: ${ctx.chat?.type ?? "unknown"}`,
-            `you: ${ctx.from?.id ?? "unknown"}`,
-          ].join("\n"),
-        );
-        return;
-      case "status":
-        await ctx.reply(
-          [
-            `sandbox: ${env.SBX_NAME}`,
-            `workdir: ${env.SBX_WORKDIR}`,
-            `model: ${modelId}`,
-            `max steps/turn: ${env.MAX_AGENT_STEPS}`,
-            `max workers: ${env.MAX_CONCURRENT_WORKERS}`,
-          ].join("\n"),
-        );
-        return;
-      default:
-        await ctx.reply("Unknown command. Try /help.");
-    }
-  }
-
-  async function summarizeStopped(
-    conversationId: string,
-    messages: Message[],
-  ): Promise<string> {
-    try {
-      const reply = await llm.complete({
-        kind: "main",
-        system: `${systemPrompt}\n\nThe user stopped this run. Without calling tools, report the current state: what was completed, what remains, and where any output files are. Be brief.`,
-        messages,
-        tools: [],
-        signal: AbortSignal.timeout(env.LLM_TIMEOUT_MS),
-        sessionId: `telegram-${conversationId}`,
-      });
-      return assistantText(reply);
-    } catch {
-      return "Stopped. Completed work is still in the sandbox.";
-    }
-  }
-
-  async function handlePrompt(
-    ctx: Context,
-    telegramUserId: string,
-    prompt: string,
-  ): Promise<void> {
-    const conversationId = String(ctx.chat?.id ?? telegramUserId);
-
-    if (!prompt) {
-      await ctx.reply("How can I help?");
-      return;
     }
 
-    if (prompt.length > MAX_INPUT_CHARS) {
-      await ctx.reply(
-        `Message too long (${prompt.length} chars). The limit is ${MAX_INPUT_CHARS}.`,
-      );
-      return;
+    async function handle(event: InboundEvent): Promise<void> {
+        if (event.kind === "command") return command(event.from, event.name, event.args);
+        if (event.text.length > MAX_INPUT_CHARS) {
+            return reply(event.from, `Message too long (${event.text.length} chars). The limit is ${MAX_INPUT_CHARS}.`);
+        }
+        if (!event.text && event.attachments.length === 0) return reply(event.from, "How can I help?");
+        const admitted = await runtime.prompt(event.from, event.text, event.id, event.attachments);
+        if (admitted.isErr()) await reply(event.from, `Could not store the attachment: ${admitted.error.message}`);
     }
 
-    const userMessage: Message = {
-      role: "user",
-      content: prompt,
-      timestamp: Date.now(),
+    const inputs = new InputHub(handle);
+    let stopping = false;
+    const shutdown = async (signal: string) => {
+        if (stopping) return;
+        stopping = true;
+        log.info("shutting down", { signal });
+        await inputs.stopAll();
+        await runtime.close();
     };
+    process.once("SIGINT", () => void shutdown("SIGINT"));
+    process.once("SIGTERM", () => void shutdown("SIGTERM"));
 
-    // A turn is already running in this chat: fold this in instead of waiting.
-    if (running.has(conversationId)) {
-      steering.add(conversationId, userMessage);
-      log.info("steering message", {
-        telegramUserId,
-        chatId: conversationId,
-      });
-      await ctx
-        .reply("Added to the running task — the agent will pick it up at its next step.")
-        .catch(() => undefined);
-      return;
-    }
-
-    await runPrompt(ctx, telegramUserId, conversationId, [userMessage]);
-  }
-
-  /** Run a batch of user messages as one or more serial turns. */
-  async function runPrompt(
-    ctx: Context,
-    telegramUserId: string,
-    conversationId: string,
-    batch: Message[],
-  ): Promise<void> {
-    const controller = new AbortController();
-    running.set(conversationId, controller);
-    const stopTyping = startTyping(ctx);
-    const startedAt = Date.now();
-
-    try {
-      let pending = batch;
-
-      while (pending.length > 0 && !controller.signal.aborted) {
-        const messages = [...history.get(conversationId), ...pending];
-        const preview =
-          pending
-            .map((message) => (typeof message.content === "string" ? message.content : ""))
-            .filter(Boolean)
-            .join(" ") || "the current task";
-
-        let acknowledged = false;
-        const turnStartedAt = Date.now();
-        const acknowledge = (force = false) => {
-          if (acknowledged) return;
-          // A tool call right away does not mean a slow turn; let the timer decide.
-          if (!force && Date.now() - turnStartedAt < 3_000) return;
-          acknowledged = true;
-          void ctx.reply(ackText(preview)).catch(() => undefined);
-        };
-
-        const ackTimer = setTimeout(() => acknowledge(true), ACK_DELAY_MS);
-        let result: Awaited<ReturnType<typeof runTurn>>;
-        try {
-          result = await runTurn(
-            ctx,
-            conversationId,
-            messages,
-            controller.signal,
-            acknowledge,
-          );
-        } finally {
-          clearTimeout(ackTimer);
-        }
-
-        history.set(conversationId, result.messages);
-
-        if (result.aborted) {
-          const summary = await summarizeStopped(conversationId, result.messages);
-          const text = [result.text, summary].filter(Boolean).join("\n\n");
-          await replyInChunks(ctx, text || "Stopped.");
-          log.info("turn aborted", {
-            telegramUserId,
-            chatId: conversationId,
-            ms: Date.now() - startedAt,
-            messageCount: result.messages.length,
-          });
-          return;
-        }
-
-        await replyInChunks(ctx, result.text || "(the model returned no text)");
-        log.info("turn complete", {
-          telegramUserId,
-          chatId: conversationId,
-          chatType: ctx.chat?.type,
-          ms: Date.now() - startedAt,
-          messageCount: result.messages.length,
-        });
-
-        // Messages that arrived too late for the loop start a follow-up turn.
-        pending = steering.take(conversationId);
-      }
-    } catch (error) {
-      log.error("turn failed", {
-        telegramUserId,
-        chatId: conversationId,
+    await inputs.add(telegram);
+    log.info("gateway online", {
         model: modelId,
-        ms: Date.now() - startedAt,
-        error,
-      });
-      await ctx
-        .reply(`Model call failed:\n${errorText(error).slice(0, 800)}`)
-        .catch(() => undefined);
-    } finally {
-      if (running.get(conversationId) === controller) {
-        running.delete(conversationId);
-      }
-      stopTyping();
-
-      const leftover = steering.take(conversationId);
-      if (leftover.length > 0) {
-        void runPrompt(ctx, telegramUserId, conversationId, leftover);
-      }
-    }
-  }
-
-  bot.on("message:text", async (ctx) => {
-    const telegramUserId = String(ctx.from.id);
-    const isGroup = ctx.chat.type !== "private";
-    const repliedToBot =
-      ctx.message.reply_to_message?.from?.id === ctx.me.id;
-    const gate = groupGate({
-      isGroup,
-      text: ctx.message.text,
-      botUsername: ctx.me.username,
-      botId: ctx.me.id,
-      entities: ctx.message.entities,
-      replyToBot: repliedToBot,
+        sandbox: `${sandbox.driver} (${sandbox.name})`,
+        storage: storagePath,
     });
-
-    if (!gate.respond) {
-      if (isGroup) {
-        log.info("ignored group message", {
-          chatId: String(ctx.chat.id),
-          chatType: ctx.chat.type,
-          fromId: telegramUserId,
-          entities: ctx.message.entities?.map((entity) => entity.type) ?? [],
-        });
-      }
-      return;
-    }
-
-    const text = gate.text.trim();
-
-    if (text.startsWith("/")) {
-      await handleCommand(ctx, text, String(ctx.chat.id));
-      return;
-    }
-
-    await handlePrompt(ctx, telegramUserId, text);
-  });
-
-  bot.on(
-    [
-      "message:document",
-      "message:photo",
-      "message:video",
-      "message:audio",
-      "message:voice",
-      "message:video_note",
-    ],
-    async (ctx) => {
-      const telegramUserId = String(ctx.from.id);
-      const isGroup = ctx.chat.type !== "private";
-      const caption = ctx.message.caption ?? "";
-      const gate = groupGate({
-        isGroup,
-        text: caption,
-        botUsername: ctx.me.username,
-        botId: ctx.me.id,
-        entities: ctx.message.caption_entities,
-        replyToBot: ctx.message.reply_to_message?.from?.id === ctx.me.id,
-      });
-
-      if (!gate.respond) return;
-
-      const stopTyping = startTyping(ctx);
-      try {
-        const file = await ingestTelegramFile(
-          ctx,
-          sandbox,
-          env.SBX_WORKDIR,
-          env.TELEGRAM_BOT_TOKEN ?? "",
-        );
-        if (!file) {
-          await ctx.reply("Unsupported attachment type.");
-          return;
-        }
-
-        const instruction = gate.text.trim() || "The user sent this file without instructions.";
-        await handlePrompt(
-          ctx,
-          telegramUserId,
-          `${instruction}\n\n${describeIngestedFile(file)}`,
-        );
-      } catch (error) {
-        log.error("file ingestion failed", { telegramUserId, error });
-        await ctx
-          .reply(`Could not receive that file:\n${errorText(error).slice(0, 500)}`)
-          .catch(() => undefined);
-      } finally {
-        stopTyping();
-      }
-    },
-  );
-
-  bot.catch((err) => {
-    log.error("unhandled bot error", {
-      updateId: err.ctx.update.update_id,
-      error: err.error,
-    });
-  });
-
-  let stopping = false;
-  const shutdown = async (signal: string) => {
-    if (stopping) return;
-    stopping = true;
-    log.info("shutting down", { signal });
-    await bot.stop();
-  };
-  process.once("SIGINT", () => void shutdown("SIGINT"));
-  process.once("SIGTERM", () => void shutdown("SIGTERM"));
-
-  log.info("gateway starting", {
-    model: modelId,
-    sandbox: env.SBX_NAME,
-    workdir: env.SBX_WORKDIR,
-    allowedUsers: allowedUsers.size,
-  });
-
-  await bot.start({
-    allowed_updates: ["message"],
-    onStart: (info) => {
-      log.info("gateway online", {
-        username: info.username,
-        hint: `add the bot to a group, then address it as @${info.username}`,
-      });
-      if (!info.can_read_all_group_messages) {
-        log.warn(
-          "Telegram group privacy is ON: the bot only receives commands, mentions, and replies. Disable privacy mode in BotFather (/setprivacy) and re-add the bot to the group.",
-          { canReadAllGroupMessages: false },
-        );
-      }
-    },
-  });
 }
 
 main().catch((error: unknown) => {
-  console.error(errorText(error));
-  process.exit(1);
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
 });

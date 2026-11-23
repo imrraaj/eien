@@ -1,18 +1,6 @@
-export { sbxExec, shellQuote, type ExecOptions, type ExecResult, type SandboxConfig } from "./exec.ts";
-export {
-  copyFromSandbox,
-  copyToSandbox,
-  statSandboxFile,
-  type CopyOptions,
-  type RemoteFileInfo,
-} from "./copy.ts";
+export { createSandbox } from "./factory.ts";
+export { CommandFailed, EditFailed, InvalidPath, type SandboxError } from "./errors.ts";
 export { resolveInRoot } from "./paths.ts";
-export { killSandboxWork, type KillOptions } from "./kill.ts";
-export {
-  editText,
-  readText,
-  writeText,
-  type EditResult,
-  type ReadOptions,
-  type ReadResult,
-} from "./files.ts";
+export { makeSandboxDir, statSandboxFile } from "./copy.ts";
+export { editText, readText, writeText } from "./files.ts";
+export type { Sandbox, SandboxConfig } from "./types.ts";

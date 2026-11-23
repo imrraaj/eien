@@ -1,0 +1,24 @@
+{
+    "$schema": "https://json.schemastore.org/prettierrc",
+    "printWidth": 120,
+    "tabWidth": 4,
+    "useTabs": false,
+    "semi": true,
+    "singleQuote": false,
+    "quoteProps": "as-needed",
+    "trailingComma": "all",
+    "bracketSpacing": true,
+    "arrowParens": "always",
+    "endOfLine": "lf",
+    "proseWrap": "preserve",
+    "overrides": [
+        {
+            "files": ["*.yml", "*.yaml", "package.json"],
+            "options": { "tabWidth": 2 }
+        },
+        {
+            "files": "*.md",
+            "options": { "tabWidth": 2, "printWidth": 80 }
+        }
+    ]
+}

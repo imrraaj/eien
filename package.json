@@ -12,18 +12,21 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "check": "bun run typecheck && bun test",
+    "check": "bun run typecheck && bun run format:check && bun test",
     "test": "bun test",
     "bot": "bun packages/gateway/src/index.ts",
+    "deploy": "./deploy/setup.sh",
+    "undeploy": "./deploy/down.sh",
     "bot:dev": "bun --watch packages/gateway/src/index.ts",
-    "up": "docker compose up -d",
-    "down": "docker compose down",
-    "ps": "docker compose ps",
-    "logs": "docker compose logs -f --tail=100",
-    "temporal:cli": "docker compose exec temporal-admin-tools temporal"
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "devDependencies": {
+    "@earendil-works/chord": "^1.5.2",
+    "@earendil-works/pi-durable": "^1.5.2",
     "@types/bun": "^1.3.0",
+    "better-result": "^3.0.1",
+    "prettier": "^3.10.1",
     "typescript": "^5.9.0"
   }
 }

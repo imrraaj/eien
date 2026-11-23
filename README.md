@@ -1,34 +1,52 @@
-# eien — always-on coding agent
+# eien: always-on coding agent
 
-A personal coding agent reachable over Telegram. The current MVP uses **pi-ai**
-(the SDK under Pi) for the model/tool loop and grammY for Telegram. Tools run
-inside the `sbx` sandbox VM: `bash`, `read`, `write`, `edit`.
+A personal coding agent you talk to over Telegram (a web app is next). The agent
+loop runs on **pi-durable** with SQLite storage, so runs, schedules, and
+background workers survive restarts. Tools run inside a sandbox: `bash`, `read`,
+`write`, `edit`, `send_file`, `web_search`, `web_fetch`, `subagent`, `schedule`.
 
-See [`always-on-agent-plan.md`](./always-on-agent-plan.md) for the full design.
-Temporal orchestration is intentionally deferred.
+## Architecture
 
-## Status
+```
+ Telegram ─┐                                         ┌─> Telegram
+ Web (soon)┼─> InputHub ─> gateway ─> agent runtime ─> OutputRouter ┼─> Web (soon)
+ ...      ─┘   (@eien/io)  commands    (@eien/agent)   (@eien/io)  └─> ...
+                                         │
+                                         ├─ pi-durable + SQLite (state/eien.sqlite)
+                                         └─ sandbox (sbx microVM or ssh container)
+```
 
-- [x] Docker Compose: Postgres, Temporal, Temporal UI, admin tools
-- [x] Sandbox `agent-1` with scoped egress, git identity, `/work`
-- [x] pi-ai client for any OpenAI-compatible endpoint
-- [x] Telegram bot with allowlist, per-user history, `/reset`, `/model`, `/status`
-- [x] Works in groups when mentioned (`@botname ...`) or replied to
-- [x] Sandbox coding tools (`bash`, `read`, `write`, `edit`), path-confined to `/work`
-- [x] Web tools (`web_search`, `web_fetch`) via Exa's keyless hosted MCP
-- [x] File exchange: receive Telegram attachments into `/work/uploads`, send results with `send_file`
-- [x] Markdown replies rendered as Telegram HTML (bold, code, links, quotes, tables)
-- [x] `spawn_agent` workers keep noisy work out of the main context
-- [ ] Durable workflows, child workers, schedules (next: Temporal)
-- [ ] Postgres transcripts and memory
+The agent loop knows only **addresses** (`{ service, chat }`), never the
+services behind them. Every service limit lives in its own service: Telegram's
+message chunking, HTML rendering, 20 MB downloads, 50 MB uploads, and typing
+indicators are all in `@eien/telegram`.
+
+- **Input services** implement `InputService` (`start(sink)`, `stop()`) and emit
+  `message` or `command` events. Attachments arrive as host temp files; the
+  runtime copies them into `/work/uploads`.
+- **Output services** implement `OutputService` (`send(chat, message)`) and
+  receive `text`, `file`, and `status` (`working`, `queued`, `idle`) messages.
+  A limit they cannot meet (a file too large, say) comes back as a typed
+  `DeliveryFailed`, never a throw.
+  Each renders them its own way or ignores them. A service can also contribute
+  a `promptHint`, which is added to the system prompt for its chats.
+- The `OutputRouter` strips em dashes from everything the bot sends, whatever
+  the service.
+
+Adding a service means implementing one or both interfaces and registering it in
+`packages/gateway/src/index.ts`:
+
+```ts
+outputs.add(web); // before the runtime opens, so its prompt hint applies
+await inputs.add(web);
+```
 
 ## Quick start
 
 ```bash
 cp .env.example .env      # fill in LLM + Telegram values
 bun install
-bun run up                # optional for now, Temporal stack
-./sandbox/bootstrap.sh    # create the agent-1 sandbox
+./sandbox/bootstrap.sh    # create the agent-1 sbx sandbox
 bun run bot
 ```
 
@@ -43,94 +61,117 @@ LLM_API_KEY=...
 MODEL_MAIN=...                        # or LLM_MODEL
 ```
 
-Any OpenAI-compatible endpoint works (`LLM_BASE_URL`). OpenRouter attribution
-headers are only added for openrouter.ai.
+Any OpenAI-compatible endpoint works. OpenRouter attribution headers are only
+added for openrouter.ai. The bot uses long polling, so no inbound ports are
+needed.
 
-Commands: `/reset`, `/stop`, `/model`, `/status`, `/help`. The bot uses long
-polling, so no inbound ports are needed.
+## Environment
 
-`/stop` aborts the running turn, kills processes started under `/work`, and asks
-the model for a short no-tools report of what was completed and where the output
-is. Completed files are left in place.
+Validated by `packages/shared/src/env.ts`; empty values count as unset. `.env`
+is gitignored and `.env.example` holds placeholders only. Secrets stay in the
+gateway process, never in prompts, tool results, or the sandbox.
 
-### Users
+| Variable                     | Default               | Purpose                                            |
+| ---------------------------- | --------------------- | -------------------------------------------------- |
+| `STATE_DIR`                  | `state`               | holds `eien.sqlite`                                |
+| `MAX_AGENT_STEPS`            | `100`                 | model turns per run (hard cap 100)                 |
+| `SOUL_PATH`                  | bundled `SOUL.md`     | persona file                                       |
+| `SYSTEM_PROMPT`              | unset                 | replaces persona and operating manual entirely     |
+| `SANDBOX_DRIVER`             | `sbx`                 | `sbx` (host Docker Sandboxes) or `ssh` (container) |
+| `SBX_NAME`, `SBX_WORKDIR`    | `agent-1`, `/work`    | sandbox name and workspace                         |
+| `EXA_MCP_URL`, `EXA_API_KEY` | Exa hosted MCP, unset | web tools; the key only raises limits              |
+| `LOG_LEVEL`                  | `info`                | `debug`, `info`, `warn`, `error`                   |
 
-`ALLOWED_TELEGRAM_USER_IDS` takes a comma-separated list of **numeric** Telegram
-user IDs:
+## Using it
 
-```dotenv
-ALLOWED_TELEGRAM_USER_IDS=111111111,222222222
-```
+Commands: `/reset`, `/schedules`, `/unschedule <name>`, `/model`, `/status`,
+`/help`. Telegram also has `/id`, which shows chat and user IDs.
 
-Restart the bot after editing. Anyone not in the list is ignored. All allowed
-users share the same sandbox and `/work`, but each private chat has its own
-history; groups share one history per group chat.
+**Users.** `ALLOWED_TELEGRAM_USER_IDS` takes numeric Telegram user IDs; anyone
+else is ignored. All users share one sandbox and `/work`. Each private chat has
+its own conversation, and a group shares one.
 
-History is **in memory only**: the last 40 messages (or ~48 K characters) per
-conversation, lost on restart, cleared by `/reset`. Postgres-backed history is
-the planned next step.
+**Groups.** The bot answers when mentioned (`@yourbot ...`), when replied to,
+and for commands. Telegram's privacy mode already delivers those; disable it in
+BotFather (`/setprivacy`) if the bot should see every group message.
 
-### Long tasks
+**Steering.** A message sent while a run is working steers it: the bot says it
+will fold it in, and pi-durable places the message after the current tool round.
+A single long tool call still has to finish first.
 
-One message may use up to `MAX_AGENT_STEPS` model steps (default and hard cap
-100, each step may batch several tool calls). Single bash commands may run up to
-15 minutes. At the limit the bot asks the model for a no-tools summary rather
-than stopping silently; send any follow-up message to continue. Turns are still
-synchronous, so a very long task keeps one "typing" indicator going until it
-finishes or the process restarts.
+**Long runs.** Short runs only show typing. A run still going after a minute
+gets a "still on it" message. Single bash commands may run up to 15 minutes.
 
-If a turn is still running after ~10 seconds (or starts using tools after 3
-seconds), the bot first posts a short `On it — …` acknowledgement quoting the
-request, so slow work is visible. Fast replies skip the acknowledgement.
+**Durability.** Conversations, the chat map, and a per-chat delivery marker live
+in `state/eien.sqlite`. A run interrupted by a restart resumes from its last
+committed step, and answers are delivered exactly where the last process left
+off: none dropped, none repeated.
 
-Messages sent while a turn is running are **not** queued behind it: they are
-folded into the running turn at its next model step, and the bot replies
-"Added to the running task". That means you can correct course or add detail
-without waiting for the whole task. A long single tool call (up to 15 minutes)
-still has to finish before the message is read.
+**Files.** Photos, videos, audio, voice notes, and documents are saved to
+`/work/uploads` and referenced in the prompt. `send_file` sends a workspace file
+back. The sandbox has `ffmpeg`, ImageMagick, `pandoc`, poppler, `python3`, `git`,
+`curl`, and `jq`; more installs with `apt-get` or `pip`.
 
-### Groups
+## Persona
 
-Add the bot to a group and address it directly:
+`packages/agent/SOUL.md` defines who the bot is: voice, length, how it handles
+disagreement and uncertainty. It is kept apart from the operating manual (tools,
+sandbox, scheduling) in `packages/agent/src/prompt.ts`, so the voice can change
+without touching the mechanics. Point `SOUL_PATH` at your own file to replace it.
 
-```
-@yourbot how much is bitcoin right now?
-```
+The system prompt is built as: persona, operating manual, then the service's
+prompt hint.
 
-It also answers when you reply to one of its messages, and for
-`/status@yourbot`. Other group messages are ignored.
+## Tools
 
-Group context is shared by the chat, while the user allowlist still applies.
-Telegram's default privacy mode already delivers mentions/commands; to let the
-bot see all group messages (for replies and context), disable privacy mode for
-the bot in BotFather (`/setprivacy`).
+| Tool                            | Runs where      | Purpose                                       |
+| ------------------------------- | --------------- | --------------------------------------------- |
+| `bash`, `read`, `write`, `edit` | sandbox         | coding work in `/work` (paths confined there) |
+| `send_file`                     | sandbox to chat | send a workspace file to the current chat     |
+| `web_search`, `web_fetch`       | host            | current information via Exa's hosted MCP      |
+| `subagent`                      | host            | persistent background workers                 |
+| `schedule`                      | host            | durable one-shot or repeating timers          |
 
-### Tools
+Web and repo content is treated as untrusted data by the prompt.
 
-| Tool | Runs where | Purpose |
-|---|---|---|
-| `bash`, `read`, `write`, `edit` | sandbox VM | Coding work in `/work` |
-| `send_file` | host + sandbox | Upload a workspace file to the chat (≤50 MB) |
-| `web_search` | host | Current information via Exa MCP (keyless) |
-| `web_fetch` | host | Read a URL as markdown/text |
-| `spawn_agent` | host + sandbox | Delegate a self-contained task to a worker; only its report returns |
+### Browser
+
+The sandbox has Vercel's [agent-browser](https://github.com/vercel-labs/agent-browser)
+CLI with a headless Chrome, and the agent drives it through `bash`: `open` a URL,
+`snapshot -i` to get interactive elements as `@e1`-style refs, then `click`,
+`fill`, `press`, `get text`, or `screenshot`. It covers what `web_fetch` cannot:
+JavaScript-heavy pages, multi-step flows, and forms. Screenshots reach the chat
+through `send_file`.
+
+It is a CLI rather than a tool on purpose: its text snapshots are already built
+for agents, and the CLI ships its own version-matched guide
+(`agent-browser skills get core`). The prompt tells the agent never to enter
+secrets it was not given and to ask before anything irreversible, such as
+purchases, payments, or sending messages.
 
 ### Subagents
 
-`spawn_agent` runs a nested turn with the same workspace and tools (minus
-`spawn_agent` itself) and returns only a short final report. That keeps noisy
-exploration, big builds, and mass file work out of the main context. Workers run
-up to `MAX_CONCURRENT_WORKERS` at once (default 3), share the sandbox, and are
-aborted by `/stop`. Give parallel workers separate directories.
+| Action                  | Effect                                                                    |
+| ----------------------- | ------------------------------------------------------------------------- |
+| `spawn` (name, message) | creates a child conversation and returns at once                          |
+| `send` (name, message)  | steers a worker, or with `followUp: true` queues after its current answer |
+| `stop` (name)           | aborts the worker's current run                                           |
+| `status` (name?)        | working or idle                                                           |
 
-Incoming photos, videos, audio, voice notes, and documents are downloaded into
-`/work/uploads` and referenced in the prompt, so the agent can transcode or
-convert them. The sandbox ships with `ffmpeg`, ImageMagick, `pandoc`, poppler,
-`python3`, `git`, `curl`, and `jq`; more can be installed with `apt-get`/`pip`.
-Telegram's Bot API caps downloads at 20 MB and bot uploads at 50 MB.
+A durable reporter posts each worker answer back to the main conversation, and
+the main agent relays it. Workers survive restarts, have their own step budget,
+and cannot spawn workers of their own.
 
-Web results are treated as untrusted data by the system prompt. `EXA_API_KEY` is
-optional and only raises Exa limits.
+### Schedules
+
+`schedule({ name, prompt, delay: "2m" })` stores a task that sleeps, then submits
+`prompt` back into the chat. `every: "15m"` repeats it; repeats missed while the
+process was down are skipped, not replayed. Delays are single-unit (`30s`, `2m`,
+`1h`, `2d`), at most 30 days; repeats are at least 10 seconds apart.
+
+`/schedules` lists them and `/unschedule <name>` cancels one without a model
+turn. Cancelling deletes the schedule's entry; its sleeping task ends itself
+when it wakes, and a new schedule may reuse the name straight away.
 
 ## Sandbox
 
@@ -139,27 +180,55 @@ optional and only raises Exa limits.
 sbx exec agent-1 -- bash -lc 'pwd'
 ```
 
-Creates `agent-1`, applies the egress policy, sets git identity and
-`known_hosts`, and makes `/work` writable by the sandbox user. Tools are confined
-to `/work`; absolute paths elsewhere are rejected.
+Creates `agent-1`, applies the egress policy, makes `/work` writable, and
+installs the media tools plus agent-browser with Chrome (about 200 MB).
+Egress is open by default while testing (`SANDBOX_ALLOW_ALL=1`); run
+`SANDBOX_ALLOW_ALL=0 ./sandbox/policy.sh` for the curated allowlist.
 
-Egress is **open** by default while testing (`SANDBOX_ALLOW_ALL=1`). Set
-`SANDBOX_ALLOW_ALL=0 ./sandbox/policy.sh` to switch back to the curated allowlist
-(git, registries, runtime hosts, price APIs).
+## Docker demo
+
+`docker-compose.bot.yml` runs the gateway plus a plain sandbox container reached
+over SSH (`SANDBOX_DRIVER=ssh`). It is a demonstration setup: the container has
+weaker isolation than an `sbx` microVM and open egress.
+
+```bash
+./deploy/setup.sh       # generates SSH keys, builds, starts
+./deploy/down.sh        # stops; ./state and the sandbox volume are kept
+```
+
+Neither container gets the Docker socket. For a model server on the host, use
+`LLM_BASE_URL=http://host.docker.internal:9931/v1`.
 
 ## Layout
 
 ```
-docker-compose.yml            Temporal + Postgres + UI (unused by the MVP bot)
-docker/initdb/                first-boot SQL (creates the `agent` DB)
-docker/dynamicconfig/         Temporal dev dynamic config
-packages/shared/              env schema, logger
-packages/llm/                 pi-ai client, provider-agnostic
-packages/sandbox/             sbx exec + file helpers, path confinement
-packages/tools/               tool schemas and dispatcher
-packages/gateway/             grammY bot, in-memory history, agent turn loop
-sandbox/                      sbx bootstrap + network policy
+packages/io/          input/output contracts, InputHub, OutputRouter
+packages/agent/       durable runtime, tools, schedules, subagents, SQLite adapter, SOUL.md
+packages/telegram/    Telegram input + output service
+packages/gateway/     composition root and commands
+packages/llm/         pi-ai model registry for an OpenAI-compatible endpoint
+packages/sandbox/     sbx and ssh backends, file helpers, path confinement
+packages/shared/      env schema, logger, formatting
+tests/                tests, one folder per package
+sandbox/              sbx bootstrap, egress policy, demo container image
+deploy/               Docker demo setup and teardown
 ```
+
+## Errors and validation
+
+- **Expected failures are values.** Anything a caller can act on returns a
+  `better-result` `Result` with a `TaggedError`: sandbox paths and commands
+  (`InvalidPath`, `CommandFailed`, `EditFailed`), the web client (`InvalidWebInput`,
+  `WebFailed`), delivery (`DeliveryFailed`), schedules (`ScheduleRejected`),
+  attachment downloads (`DownloadFailed`).
+- **Tools reach the model through one adapter,** `fromResult` in
+  `packages/agent/src/tool-result.ts`: `Ok` becomes the tool output, `Err` a tool
+  error carrying its message.
+- **Bugs and bad config still throw:** a missing token, a relative workspace root,
+  a duplicate service name, a missing binary. pi-durable task phases also throw by
+  contract.
+- **Untrusted data is parsed, not cast:** Zod for env and Exa responses, pi-schema
+  for tool arguments (pi-durable builds the model's tool schemas from it).
 
 ## Checks
 
@@ -167,10 +236,6 @@ sandbox/                      sbx bootstrap + network policy
 bun run check    # tsc --noEmit + bun test
 ```
 
-## Environment
-
-Validated by `packages/shared/src/env.ts`; empty values are treated as unset.
-`.env` is gitignored and `.env.example` holds placeholders only. Secrets stay in
-the gateway process — never in prompts, tool results, or the sandbox.
-
-History is in memory for now, so restarting the bot clears conversations.
+The suite includes pi-durable's storage conformance tests for the SQLite adapter
+and an end-to-end runtime test against a fake model server, covering restarts
+and duplicate requests.

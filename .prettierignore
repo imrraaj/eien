@@ -1,0 +1,8 @@
+node_modules/
+bun.lock
+state/
+deploy/keys/
+deploy/compose.env
+dist/
+coverage/
+*.sqlite*
