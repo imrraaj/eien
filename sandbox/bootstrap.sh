@@ -43,6 +43,19 @@ sbx exec "$SBX_NAME" bash -lc '
   magick -version | head -1
 '
 
+echo "installing agent-browser (headless Chrome for the agent) in '$SBX_NAME'"
+sbx exec "$SBX_NAME" bash -lc '
+  set -euo pipefail
+  command -v npm >/dev/null || {
+    sudo apt-get update -qq
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends nodejs npm
+  }
+  command -v agent-browser >/dev/null || sudo npm install -g agent-browser --silent
+  # Downloads Chrome for Testing plus its system libraries; a no-op when present.
+  agent-browser install --with-deps >/dev/null
+  agent-browser --version
+'
+
 cat <<EOF
 
 Sandbox ready: $SBX_NAME

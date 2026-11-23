@@ -134,6 +134,21 @@ prompt hint.
 
 Web and repo content is treated as untrusted data by the prompt.
 
+### Browser
+
+The sandbox has Vercel's [agent-browser](https://github.com/vercel-labs/agent-browser)
+CLI with a headless Chrome, and the agent drives it through `bash`: `open` a URL,
+`snapshot -i` to get interactive elements as `@e1`-style refs, then `click`,
+`fill`, `press`, `get text`, or `screenshot`. It covers what `web_fetch` cannot:
+JavaScript-heavy pages, multi-step flows, and forms. Screenshots reach the chat
+through `send_file`.
+
+It is a CLI rather than a tool on purpose: its text snapshots are already built
+for agents, and the CLI ships its own version-matched guide
+(`agent-browser skills get core`). The prompt tells the agent never to enter
+secrets it was not given and to ask before anything irreversible, such as
+purchases, payments, or sending messages.
+
 ### Subagents
 
 | Action                  | Effect                                                                    |
@@ -165,7 +180,8 @@ when it wakes, and a new schedule may reuse the name straight away.
 sbx exec agent-1 -- bash -lc 'pwd'
 ```
 
-Creates `agent-1`, applies the egress policy, and makes `/work` writable.
+Creates `agent-1`, applies the egress policy, makes `/work` writable, and
+installs the media tools plus agent-browser with Chrome (about 200 MB).
 Egress is open by default while testing (`SANDBOX_ALLOW_ALL=1`); run
 `SANDBOX_ALLOW_ALL=0 ./sandbox/policy.sh` for the curated allowlist.
 
