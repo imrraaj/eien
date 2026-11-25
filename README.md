@@ -144,6 +144,12 @@ display names are user-controlled. Telegram's privacy mode already delivers
 mentions and replies; disable it in BotFather (`/setprivacy`) if the bot should
 see every group message.
 
+**Not every reply is a request.** Punctuation-only or emoji-only messages (such
+as a `.` used to quote the bot) never reach the agent. In groups the agent is
+also told to answer exactly `NO_REPLY` when people are just discussing or
+quoting its answer; the Telegram layer drops that reply and its placeholder
+instead of posting it.
+
 **Feedback.** As soon as a message is accepted the bot replies with a
 "Thinking…" placeholder and edits that same message with the answer when the
 run finishes, so long runs don't look stalled.

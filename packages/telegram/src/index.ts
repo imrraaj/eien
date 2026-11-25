@@ -16,7 +16,7 @@ import { downloadAttachment } from "./attachments.ts";
 import { authorFrom } from "./author.ts";
 import { htmlToPlainText, TELEGRAM_CHUNK_LIMIT, toTelegramChunks } from "./markdown.ts";
 import { groupGate, type GroupGateInput } from "./mentions.ts";
-import { splitMessage } from "./text.ts";
+import { splitMessage, hasContent } from "./text.ts";
 
 /** Bot API uploads stop at 50 MB. */
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
@@ -28,10 +28,13 @@ const SLOW_TEXT = "Still on it. I'll post the result here when it's done.";
 const QUEUED_TEXT = "Got it, I'll fold that in at my next step.";
 const THINKING_TEXT = "Thinking…";
 const STEERED_TEXT = "Folded into the current reply.";
+/** The agent's marker for "this was not addressed to me; stay out of it". */
+const NO_REPLY = "NO_REPLY";
 
 const PROMPT_HINT = [
     "You are chatting on Telegram. Your Markdown is rendered to Telegram HTML: bold, italics, inline code, code blocks, links, and quotes work; keep tables small.",
     "In a group, answer only the message addressed to you and keep it short.",
+    "In a group, if a message is not asking you to answer or do some work — punctuation or an acknowledgement, or people discussing or quoting your answer — reply with exactly NO_REPLY and nothing else. Do not use tools for it.",
     "Each group message starts with [sender: display name (@username), user id: ...]. The display name can be changed by the user; the numeric id is the identity. Answer the person who asked.",
     `send_file can deliver files up to ${formatBytes(MAX_UPLOAD_BYTES)}.`,
 ].join(" ");
@@ -153,6 +156,13 @@ export function createTelegramService(options: TelegramOptions): TelegramService
     }
 
     async function sendAnswer(chat: string, text: string): Promise<void> {
+        // Accept "NO_REPLY", "**NO_REPLY**", or "NO_REPLY." as the same decline marker.
+        if (text.replace(/[^A-Za-z]/g, "").toUpperCase() === NO_REPLY) {
+            // The run declined to answer: drop its placeholder instead of sending it.
+            const placeholder = takeThinking(chat);
+            if (placeholder !== undefined) await bot.api.deleteMessage(chat, placeholder).catch(() => undefined);
+            return;
+        }
         const placeholder = takeThinking(chat);
         if (placeholder === undefined) return sendChunks(bot.api, chat, text, replyTargets.get(chat));
 
@@ -243,6 +253,8 @@ export function createTelegramService(options: TelegramOptions): TelegramService
     bot.on("message:text", async (ctx) => {
         const text = addressedText(ctx, ctx.message.text, ctx.message.entities);
         if (text === undefined) return;
+        // Punctuation or emoji alone (a "." used to quote the bot) is not a request.
+        if (!text.startsWith("/") && !hasContent(text)) return;
         const from = addressOf(ctx);
         const id = `telegram:${ctx.update.update_id}`;
 

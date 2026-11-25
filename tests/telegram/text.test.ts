@@ -1,5 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import { splitMessage } from "../../packages/telegram/src/text.ts";
+import { hasContent, splitMessage } from "../../packages/telegram/src/text.ts";
+
+describe("hasContent", () => {
+    test("ignores punctuation, emoji, and whitespace", () => {
+        expect(hasContent(".")).toBe(false);
+        expect(hasContent("...")).toBe(false);
+        expect(hasContent("👍🙏")).toBe(false);
+        expect(hasContent("  ")).toBe(false);
+    });
+
+    test("accepts words and numbers in any script", () => {
+        expect(hasContent("ok")).toBe(true);
+        expect(hasContent(".")).toBe(false);
+        expect(hasContent("theek hai?")).toBe(true);
+        expect(hasContent("हाँ")).toBe(true);
+        expect(hasContent("42")).toBe(true);
+    });
+});
 
 describe("splitMessage", () => {
     test("returns short text as a single chunk", () => {

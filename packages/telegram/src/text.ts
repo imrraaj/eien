@@ -6,6 +6,11 @@ function isHighSurrogate(code: number): boolean {
     return code >= 0xd800 && code <= 0xdbff;
 }
 
+/** True when the text carries words or numbers, not just punctuation, emoji, or whitespace. */
+export function hasContent(text: string): boolean {
+    return /[\p{L}\p{N}]/u.test(text);
+}
+
 /**
  * Split text into Telegram-sized chunks, preferring newline then space
  * boundaries. Never splits a surrogate pair (emoji, some CJK).
