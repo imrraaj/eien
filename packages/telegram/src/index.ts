@@ -24,6 +24,7 @@ const TYPING_REFRESH_MS = 4_500;
 
 const SLOW_TEXT = "Still on it. I'll post the result here when it's done.";
 const QUEUED_TEXT = "Got it, I'll fold that in at my next step.";
+const THINKING_TEXT = "Thinking…";
 
 const PROMPT_HINT = [
     "You are chatting on Telegram. Your Markdown is rendered to Telegram HTML: bold, italics, inline code, code blocks, links, and quotes work; keep tables small.",
@@ -35,6 +36,8 @@ export interface TelegramOptions {
     token: string;
     /** Numeric Telegram user IDs allowed to talk to the bot. */
     allowedUsers: ReadonlySet<string>;
+    /** Free-text names that address the bot in groups. Defaults to "eien" and "eienbot". */
+    botNames?: readonly string[];
     log: Logger;
 }
 
@@ -61,16 +64,103 @@ async function sendChunks(api: Api, chat: string, text: string, replyTo: number 
 }
 
 export function createTelegramService(options: TelegramOptions): TelegramService {
-    const { token, allowedUsers, log } = options;
+    const { token, allowedUsers, botNames, log } = options;
     const bot = new Bot(token);
     /** The newest message each chat sent us, quoted by the next answer. */
     const replyTargets = new Map<string, number>();
+    /** "Thinking…" placeholders waiting to be edited into an answer, oldest first per chat. */
+    const thinking = new Map<string, number[]>();
     /** Typing loops and slow-run notices for chats with work in flight. */
     const working = new Map<string, () => void>();
     let sink: InboundSink | undefined;
     let polling: Promise<void> | undefined;
 
     const addressOf = (ctx: Context): Address => ({ service: "telegram", chat: String(ctx.chat!.id) });
+
+    /** Post the immediate "Thinking…" reply the answer will later replace. */
+    async function postThinking(chat: string, replyTo: number | undefined): Promise<number | undefined> {
+        const reply =
+            replyTo === undefined
+                ? {}
+                : { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } };
+        try {
+            const sent = await bot.api.sendMessage(chat, THINKING_TEXT, reply);
+            const pending = thinking.get(chat) ?? [];
+            pending.push(sent.message_id);
+            thinking.set(chat, pending);
+            return sent.message_id;
+        } catch (error) {
+            log.warn("could not post thinking placeholder", { chat, error });
+            return undefined;
+        }
+    }
+
+    /** Claim the oldest placeholder, if any, so the next answer edits it instead of sending fresh. */
+    function takeThinking(chat: string): number | undefined {
+        const pending = thinking.get(chat);
+        const id = pending?.shift();
+        if (id === undefined) return undefined;
+        if (pending!.length === 0) thinking.delete(chat);
+        return id;
+    }
+
+    function hasThinking(chat: string): boolean {
+        return (thinking.get(chat)?.length ?? 0) > 0;
+    }
+
+    /** Drop placeholders a run never answered, but give a late watcher time to claim them first. */
+    function scheduleThinkingCleanup(chat: string): void {
+        const snapshot = thinking.get(chat);
+        if (!snapshot?.length) return;
+        const ids = new Set(snapshot);
+        setTimeout(() => {
+            const pending = thinking.get(chat);
+            if (!pending) return;
+            const left = pending.filter((id) => ids.has(id));
+            const kept = pending.filter((id) => !ids.has(id));
+            if (kept.length === 0) thinking.delete(chat);
+            else thinking.set(chat, kept);
+            for (const id of left) void bot.api.deleteMessage(chat, id).catch(() => undefined);
+        }, 15_000);
+    }
+
+    /** Edit a placeholder to the given text. Returns false when Telegram refuses. */
+    async function editThinking(chat: string, messageId: number, text: string, html: boolean): Promise<boolean> {
+        try {
+            await bot.api.editMessageText(chat, messageId, text, html ? { parse_mode: "HTML" } : {});
+            return true;
+        } catch (error) {
+            // Rewriting a message with identical text is harmless, not a failure.
+            return !html ? errorText(error).includes("message is not modified") : false;
+        }
+    }
+
+    async function sendAnswer(chat: string, text: string): Promise<void> {
+        const placeholder = takeThinking(chat);
+        if (placeholder === undefined) return sendChunks(bot.api, chat, text, replyTargets.get(chat));
+
+        const [first = "", ...rest] = toTelegramChunks(text, TELEGRAM_CHUNK_LIMIT);
+        if (first === "") {
+            await bot.api.deleteMessage(chat, placeholder).catch(() => undefined);
+            return;
+        }
+
+        // Prefer HTML, fall back to plain text, and only then give up on the placeholder.
+        const edited =
+            (await editThinking(chat, placeholder, first, true)) ||
+            (await editThinking(chat, placeholder, htmlToPlainText(first), false));
+        if (!edited) {
+            await bot.api.deleteMessage(chat, placeholder).catch(() => undefined);
+            return sendChunks(bot.api, chat, text, replyTargets.get(chat));
+        }
+        for (const chunk of rest) {
+            try {
+                await bot.api.sendMessage(chat, chunk, { parse_mode: "HTML" });
+            } catch {
+                for (const plain of splitMessage(htmlToPlainText(chunk))) await bot.api.sendMessage(chat, plain);
+            }
+        }
+    }
 
     function startWorking(chat: string): void {
         if (working.has(chat)) return;
@@ -90,12 +180,18 @@ export function createTelegramService(options: TelegramOptions): TelegramService
     }
 
     async function emit(ctx: Context, event: InboundEvent): Promise<void> {
-        if (ctx.message) replyTargets.set(event.from.chat, ctx.message.message_id);
+        const chat = event.from.chat;
+        if (ctx.message) replyTargets.set(chat, ctx.message.message_id);
+        if (event.kind === "message") await postThinking(chat, ctx.message?.message_id);
         try {
             await sink?.(event);
         } catch (error) {
             log.error("inbound event failed", { from: event.from, error });
-            await ctx.reply(`Something broke: ${errorText(error).slice(0, 500)}`).catch(() => undefined);
+            const text = `Something broke: ${errorText(error).slice(0, 500)}`;
+            const placeholder = takeThinking(chat);
+            if (placeholder === undefined) await ctx.reply(text).catch(() => undefined);
+            else if (!(await editThinking(chat, placeholder, text, false)))
+                await bot.api.deleteMessage(chat, placeholder).catch(() => undefined);
         }
     }
 
@@ -108,7 +204,7 @@ export function createTelegramService(options: TelegramOptions): TelegramService
         await next();
     });
 
-    /** Group messages count only when they mention or reply to the bot; returns the text addressed to it. */
+    /** Group messages count only when they mention, name, or reply to the bot; returns the text addressed to it. */
     function addressedText(ctx: Context, text: string, entities: GroupGateInput["entities"]): string | undefined {
         const gate = groupGate({
             isGroup: ctx.chat?.type !== "private",
@@ -117,6 +213,7 @@ export function createTelegramService(options: TelegramOptions): TelegramService
             botId: ctx.me.id,
             entities,
             replyToBot: ctx.message?.reply_to_message?.from?.id === ctx.me.id,
+            botNames,
         });
         return gate.respond ? gate.text.trim() : undefined;
     }
@@ -169,16 +266,30 @@ export function createTelegramService(options: TelegramOptions): TelegramService
     async function deliver(chat: string, message: OutboundMessage): Promise<void> {
         switch (message.kind) {
             case "text":
-                return sendChunks(bot.api, chat, message.text, replyTargets.get(chat));
-            case "file":
+                return sendAnswer(chat, message.text);
+            case "file": {
+                // A file replaces the pending placeholder: keep its caption there when there is one.
+                const placeholder = takeThinking(chat);
+                if (placeholder !== undefined) {
+                    const applied =
+                        message.caption === undefined
+                            ? false
+                            : await editThinking(chat, placeholder, message.caption, false);
+                    if (!applied) await bot.api.deleteMessage(chat, placeholder).catch(() => undefined);
+                }
                 await bot.api.sendDocument(chat, new InputFile(createReadStream(message.localPath), message.name), {
                     caption: message.caption,
                 });
                 return;
+            }
             case "status":
-                if (message.status === "idle") stopWorking(chat);
-                else startWorking(chat);
-                if (message.status === "queued") await bot.api.sendMessage(chat, QUEUED_TEXT);
+                if (message.status === "idle") {
+                    stopWorking(chat);
+                    scheduleThinkingCleanup(chat);
+                } else {
+                    startWorking(chat);
+                    if (message.status === "queued" && !hasThinking(chat)) await bot.api.sendMessage(chat, QUEUED_TEXT);
+                }
                 return;
         }
     }

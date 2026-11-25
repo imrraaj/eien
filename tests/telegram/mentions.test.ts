@@ -78,6 +78,40 @@ describe("groupGate", () => {
         expect(groupGate({ ...base, isGroup: true, text: "@eienbot2 hi" }).respond).toBe(false);
     });
 
+    test("responds when named in a group and strips the addressing name", () => {
+        expect(groupGate({ ...base, isGroup: true, text: "eienbot price of btc" })).toEqual({
+            respond: true,
+            text: "price of btc",
+        });
+        expect(groupGate({ ...base, isGroup: true, text: "hey Eien can you check this" }).text).toBe(
+            "hey can you check this",
+        );
+    });
+
+    test("keeps later occurrences of the name", () => {
+        expect(groupGate({ ...base, isGroup: true, text: "eien what is eien" }).text).toBe("what is eien");
+    });
+
+    test("only matches the name as a standalone word", () => {
+        expect(groupGate({ ...base, isGroup: true, text: "eienbot2 hi" }).respond).toBe(false);
+        expect(groupGate({ ...base, isGroup: true, text: "eienish hi" }).respond).toBe(false);
+        expect(groupGate({ ...base, isGroup: true, text: "xeien hi" }).respond).toBe(false);
+    });
+
+    test("strips a name in private chats too", () => {
+        expect(groupGate({ ...base, isGroup: false, text: "eien hello" })).toEqual({
+            respond: true,
+            text: "hello",
+        });
+    });
+
+    test("accepts custom bot names", () => {
+        expect(groupGate({ ...base, isGroup: true, text: "helper ping", botNames: ["helper"] })).toEqual({
+            respond: true,
+            text: "ping",
+        });
+    });
+
     test("stripMention removes all occurrences", () => {
         expect(stripMention("@eienbot hi @eienbot there", bot)).toBe("hi there");
     });
