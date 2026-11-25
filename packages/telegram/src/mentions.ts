@@ -100,7 +100,8 @@ function bareCommand(text: string): boolean {
  * named, mentioned, replied to, or sent /cmd@botusername.
  */
 export function groupGate(input: GroupGateInput): GroupGateResult {
-    const names = input.botNames ?? DEFAULT_BOT_NAMES;
+    // The live username counts too, so a bot named e.g. "eienrobot" answers to it.
+    const names = [input.botUsername, ...(input.botNames ?? DEFAULT_BOT_NAMES)];
 
     if (!input.isGroup) {
         return { respond: true, text: stripBotName(input.text, names) };

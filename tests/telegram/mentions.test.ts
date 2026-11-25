@@ -112,6 +112,12 @@ describe("groupGate", () => {
         });
     });
 
+    test("responds to the bot's own username as a name", () => {
+        expect(
+            groupGate({ ...base, botUsername: "eienrobot", isGroup: true, text: "eienrobot hi" }),
+        ).toEqual({ respond: true, text: "hi" });
+    });
+
     test("stripMention removes all occurrences", () => {
         expect(stripMention("@eienbot hi @eienbot there", bot)).toBe("hi there");
     });
