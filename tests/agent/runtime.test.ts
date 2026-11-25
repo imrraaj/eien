@@ -1,17 +1,17 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Result } from "better-result";
 import type { Address, OutboundMessage } from "../../packages/io/src/index.ts";
-import { createModelsRegistry } from "../../packages/llm/src/index.ts";
+import { createModelsRegistry, createLlm } from "../../packages/llm/src/index.ts";
 import type { Sandbox } from "../../packages/sandbox/src/index.ts";
 import { createLogger, loadEnv } from "../../packages/shared/src/index.ts";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAgentRuntime, type AgentRuntime } from "../../packages/agent/src/runtime.ts";
 
 /** OpenAI-compatible endpoint that streams "echo: <last user message>" and records each request. */
 function fakeModelServer() {
-    const requests: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
+    const requests: Array<{ model?: string; messages: Array<{ role: string; content: unknown }> }> = [];
     const server = Bun.serve({
         port: 0,
         async fetch(request) {
@@ -84,11 +84,12 @@ describe("agent runtime", () => {
             LLM_BASE_URL: `http://localhost:${model.server.port}/v1`,
             LLM_API_KEY: "x",
             MODEL_MAIN: "fake",
+            MODELS_PATH: join(dir, "models.json"),
         });
         return createAgentRuntime({
             storagePath: join(dir, "eien.sqlite"),
             models: createModelsRegistry(env),
-            modelId: "fake",
+            model: { provider: "eien", modelId: "fake" },
             maxTurns: 5,
             sandbox,
             web: { mcpUrl: "http://localhost:1" },
@@ -139,5 +140,43 @@ describe("agent runtime", () => {
         await out.until((message) => message.kind === "status" && message.status === "idle");
         await runtime.close();
         expect(model.requests.length).toBe(before);
+    });
+
+    test("setModel points open conversations at the new model", async () => {
+        const baseUrl = `http://localhost:${model.server.port}/v1`;
+        const path = join(dir, "models-switch.json");
+        await writeFile(
+            path,
+            JSON.stringify({
+                selected: "one/fake",
+                providers: {
+                    one: { baseUrl, apiKey: "x", models: [{ id: "fake" }] },
+                    two: { baseUrl, apiKey: "x", models: [{ id: "other" }] },
+                },
+            }),
+        );
+        const env = loadEnv({ MODELS_PATH: path, MODEL_SELECTION_PATH: join(dir, "switch-model.json") });
+        const llm = createLlm(env);
+        const out = recordingOutbox();
+        const runtime = await createAgentRuntime({
+            storagePath: join(dir, "switch.sqlite"),
+            models: llm.models,
+            model: llm.selection,
+            maxTurns: 5,
+            sandbox,
+            web: { mcpUrl: "http://localhost:1" },
+            outbox: out.outbox,
+            instructions: (service) => `test prompt for ${service}`,
+            log: createLogger({ level: "error" }),
+        });
+
+        await runtime.prompt(chat, "first", "switch-1");
+        await out.until((message) => message.kind === "status" && message.status === "idle");
+        await runtime.setModel({ provider: "two", modelId: "other" });
+        await runtime.prompt(chat, "second", "switch-2");
+        await out.until((message) => message.kind === "text" && message.text === "echo: second");
+        await runtime.close();
+
+        expect(model.requests.at(-1)?.model).toBe("other");
     });
 });

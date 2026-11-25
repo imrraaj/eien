@@ -262,11 +262,52 @@ export function createTelegramService(options: TelegramOptions): TelegramService
         },
     );
 
+    bot.on("callback_query:data", async (ctx) => {
+        const chat = ctx.chat?.id;
+        if (chat === undefined) return;
+        const chatId = String(chat);
+        // Stop the button's spinner before doing any work.
+        await ctx.answerCallbackQuery().catch(() => undefined);
+
+        const event = {
+            kind: "callback",
+            from: { service: "telegram", chat: chatId },
+            id: `telegram:callback:${ctx.update.update_id}`,
+            data: ctx.callbackQuery.data,
+        } as const;
+        try {
+            await sink?.(event);
+        } catch (error) {
+            log.error("callback failed", { from: event.from, error });
+            await ctx.reply(`Something broke: ${errorText(error).slice(0, 500)}`).catch(() => undefined);
+        }
+
+        // A picker is one-shot: drop its buttons so the same choice cannot be replayed.
+        const messageId = ctx.callbackQuery.message?.message_id;
+        if (messageId !== undefined) await bot.api.editMessageReplyMarkup(chatId, messageId).catch(() => undefined);
+    });
+
     /** Send one message through the Bot API; throws whatever grammY throws. */
     async function deliver(chat: string, message: OutboundMessage): Promise<void> {
         switch (message.kind) {
             case "text":
                 return sendAnswer(chat, message.text);
+            case "choices": {
+                const keyboard = message.choices.map((choice) => [
+                    {
+                        text: choice.label.length > 60 ? `${choice.label.slice(0, 59)}…` : choice.label,
+                        callback_data: choice.data.slice(0, 64),
+                    },
+                ]);
+                const replyTo = replyTargets.get(chat);
+                await bot.api.sendMessage(chat, message.text, {
+                    reply_markup: { inline_keyboard: keyboard },
+                    ...(replyTo === undefined
+                        ? {}
+                        : { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } }),
+                });
+                return;
+            }
             case "file": {
                 // A file replaces the pending placeholder: keep its caption there when there is one.
                 const placeholder = takeThinking(chat);
@@ -306,7 +347,7 @@ export function createTelegramService(options: TelegramOptions): TelegramService
             sink = next;
             return new Promise((resolve, reject) => {
                 polling = bot.start({
-                    allowed_updates: ["message"],
+                    allowed_updates: ["message", "callback_query"],
                     onStart: (info) => {
                         log.info("telegram online", { username: info.username });
                         if (!info.can_read_all_group_messages) {

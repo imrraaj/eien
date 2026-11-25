@@ -9,6 +9,10 @@ dist/
 .env
 .env.*
 !.env.example
+# provider catalogs may contain API keys
+models.json
+models.*.json
+!models.example.json
 !.env.docker.example
 !.env.sbx.example
 

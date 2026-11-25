@@ -1,6 +1,6 @@
 import { buildInstructions, createAgentRuntime, formatSchedules, loadSoul, operatingManual } from "@eien/agent";
 import { InputHub, OutputRouter, type Address, type InboundEvent } from "@eien/io";
-import { createModelsRegistry, resolveModelId } from "@eien/llm";
+import { createLlm, type ModelSelection } from "@eien/llm";
 import { createSandbox, type SandboxConfig } from "@eien/sandbox";
 import { createLogger, loadEnv, type Env } from "@eien/shared";
 import { createTelegramService } from "@eien/telegram";
@@ -14,6 +14,8 @@ const HELP = [
     "/schedules: list reminders and repeating tasks",
     "/unschedule <name>: cancel one",
     "/model: show the active model",
+    "/models: pick a model with buttons (* marks the current one)",
+    "/setmodel <ref>: switch models (e.g. openrouter/anthropic/claude-sonnet-4.5)",
     "/status: sandbox and limits",
     "/help: this message",
 ].join("\n");
@@ -41,7 +43,7 @@ async function main(): Promise<void> {
         throw new Error("ALLOWED_TELEGRAM_USER_IDS is empty. Set your numeric Telegram user ID to lock the bot down.");
     }
 
-    const modelId = resolveModelId(env);
+    const llm = createLlm(env);
     const sandbox = createSandbox(sandboxConfig(env));
     const storagePath = `${env.STATE_DIR}/eien.sqlite`;
     const base =
@@ -58,8 +60,8 @@ async function main(): Promise<void> {
 
     const runtime = await createAgentRuntime({
         storagePath,
-        models: createModelsRegistry(env),
-        modelId,
+        models: llm.models,
+        model: llm.selection,
         maxTurns: env.MAX_AGENT_STEPS,
         sandbox,
         web: { mcpUrl: env.EXA_MCP_URL, exaApiKey: env.EXA_API_KEY },
@@ -71,6 +73,32 @@ async function main(): Promise<void> {
     async function reply(to: Address, text: string): Promise<void> {
         const sent = await outputs.send(to, { kind: "text", text });
         if (sent.isErr()) log.warn("could not reply", { to, error: sent.error });
+    }
+
+    /** Render the model catalog as one-click buttons; the active model is starred. */
+    async function offerModels(to: Address): Promise<void> {
+        const active = llm.selection.ref;
+        const choices = llm.catalog.map((entry, index) => ({
+            label: `${entry.ref === active ? "*" : "  "} ${entry.ref}`,
+            data: `model:${index}`,
+        }));
+        const sent = await outputs.send(to, {
+            kind: "choices",
+            text: "Pick a model. * marks the current one.",
+            choices,
+        });
+        if (sent.isErr()) log.warn("could not send model picker", { to, error: sent.error });
+    }
+
+    /** Switch the live runtime and remember the choice across restarts. */
+    async function setModel(to: Address, next: ModelSelection): Promise<void> {
+        await runtime.setModel({ provider: next.provider, modelId: next.modelId });
+        try {
+            llm.remember(next);
+        } catch (error) {
+            log.warn("could not persist model selection", { ref: next.ref, error });
+        }
+        return reply(to, `Model set to ${next.ref}.`);
     }
 
     async function command(from: Address, name: string, args: readonly string[]): Promise<void> {
@@ -90,13 +118,22 @@ async function main(): Promise<void> {
                 return reply(from, cancelled ? `Cancelled "${target}".` : `No schedule named "${target}".`);
             }
             case "model":
-                return reply(from, `Model: ${modelId}`);
+                return reply(from, `Model: ${llm.selection.ref}`);
+            case "models":
+                return offerModels(from);
+            case "setmodel": {
+                const wanted = args.join(" ").trim();
+                if (!wanted) return offerModels(from);
+                const next = llm.select(wanted);
+                if (!next) return reply(from, `No model matches "${wanted}". Use /models to pick one.`);
+                return setModel(from, next);
+            }
             case "status":
                 return reply(
                     from,
                     [
                         `sandbox: ${sandbox.driver} (${sandbox.name}, ${sandbox.root})`,
-                        `model: ${modelId}`,
+                        `model: ${llm.selection.ref}`,
                         `max turns/run: ${env.MAX_AGENT_STEPS}`,
                         `storage: ${storagePath}`,
                     ].join("\n"),
@@ -108,6 +145,14 @@ async function main(): Promise<void> {
 
     async function handle(event: InboundEvent): Promise<void> {
         if (event.kind === "command") return command(event.from, event.name, event.args);
+        if (event.kind === "callback") {
+            const index = Number(/^model:(\d+)$/.exec(event.data)?.[1]);
+            const entry = Number.isInteger(index) ? llm.catalog[index] : undefined;
+            if (!entry) return reply(event.from, "That choice expired. Run /models again.");
+            const next = llm.select(entry.ref);
+            if (!next) return reply(event.from, `No model matches "${entry.ref}".`);
+            return setModel(event.from, next);
+        }
         if (event.text.length > MAX_INPUT_CHARS) {
             return reply(event.from, `Message too long (${event.text.length} chars). The limit is ${MAX_INPUT_CHARS}.`);
         }
@@ -131,7 +176,7 @@ async function main(): Promise<void> {
 
     await inputs.add(telegram);
     log.info("gateway online", {
-        model: modelId,
+        model: llm.selection.ref,
         sandbox: `${sandbox.driver} (${sandbox.name})`,
         storage: storagePath,
     });

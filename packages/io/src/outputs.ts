@@ -41,6 +41,8 @@ function styled(message: OutboundMessage): OutboundMessage {
     switch (message.kind) {
         case "text":
             return { ...message, text: scrubDashes(message.text) };
+        case "choices":
+            return { ...message, text: scrubDashes(message.text) };
         case "file":
             return message.caption === undefined ? message : { ...message, caption: scrubDashes(message.caption) };
         case "status":

@@ -31,6 +31,13 @@ export type InboundEvent =
           /** Lowercase, without the leading slash. */
           readonly name: string;
           readonly args: readonly string[];
+      }
+    | {
+          readonly kind: "callback";
+          readonly from: Address;
+          readonly id: string;
+          /** The `data` of the choice the user clicked, as rendered by this service. */
+          readonly data: string;
       };
 
 export type InboundSink = (event: InboundEvent) => Promise<void>;
@@ -42,9 +49,20 @@ export interface InputService {
     stop(): Promise<void>;
 }
 
+/** One clickable option rendered by an input service. `data` is echoed back as a callback event. */
+export interface Choice {
+    readonly label: string;
+    readonly data: string;
+}
+
 /** What the agent says. `status` is a hint each service renders its own way, or ignores. */
 export type OutboundMessage =
     | { readonly kind: "text"; readonly text: string }
+    | {
+          readonly kind: "choices";
+          readonly text: string;
+          readonly choices: readonly Choice[];
+      }
     | {
           readonly kind: "file";
           /** Host path, valid until `send` settles. */

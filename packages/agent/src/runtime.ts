@@ -19,7 +19,7 @@ import {
     type DeliveryFailed,
     type OutboundMessage,
 } from "@eien/io";
-import { PROVIDER_ID, type createModelsRegistry } from "@eien/llm";
+import { type createModelsRegistry } from "@eien/llm";
 import type { Sandbox } from "@eien/sandbox";
 import type { Logger } from "@eien/shared";
 import { Result } from "better-result";
@@ -44,7 +44,8 @@ export interface Outbox {
 export interface RuntimeOptions {
     storagePath: string;
     models: ReturnType<typeof createModelsRegistry>;
-    modelId: string;
+    /** Provider and model the agent starts on. */
+    model: ModelRef;
     maxTurns: number;
     sandbox: Sandbox;
     web: WebOptions;
@@ -52,6 +53,11 @@ export interface RuntimeOptions {
     /** System prompt for chats on a service. */
     instructions: (service: string) => string;
     log: Logger;
+}
+
+export interface ModelRef {
+    provider: string;
+    modelId: string;
 }
 
 /** The durable agent loop. It knows addresses, never the services behind them. */
@@ -67,6 +73,8 @@ export interface AgentRuntime {
         attachments?: readonly Attachment[],
     ): Promise<Result<void, CommandFailed>>;
     reset(chat: Address): Promise<void>;
+    /** Switch every open conversation to another model in the registry. */
+    setModel(model: ModelRef): Promise<void>;
     schedules(chat: Address): Promise<ScheduleInfo[]>;
     /** False when there is no schedule by that name. */
     cancelSchedule(chat: Address, name: string): Promise<boolean>;
@@ -85,6 +93,8 @@ function failureText(settled: SettledSubmissionRecord): string | undefined {
 
 export async function createAgentRuntime(options: RuntimeOptions): Promise<AgentRuntime> {
     const { sandbox, outbox, log } = options;
+    /** The active model; `/setmodel` updates it and reconfigures every open conversation. */
+    let currentModel: ModelRef = options.model;
 
     /** Open conversations by address key, and the reverse for tools that only know the conversation. */
     const conversations = new Map<string, Promise<Conversation>>();
@@ -128,7 +138,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
 
     const agentFor = (service: string) =>
         ({
-            model: { provider: PROVIDER_ID, modelId: options.modelId },
+            model: { provider: currentModel.provider, modelId: currentModel.modelId },
             instructions: options.instructions(service),
             cwd: sandbox.root,
             maxTurns: options.maxTurns,
@@ -262,6 +272,17 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
 
         async reset(chat) {
             await (await conversationFor(chat)).reset(undefined, CHORD);
+        },
+
+        async setModel(model) {
+            currentModel = model;
+            await Promise.all(
+                [...conversations.values()].map(async (pending) => {
+                    const conversation = await pending;
+                    const to = addresses.get(conversation.id);
+                    if (to !== undefined) await syncAgent(conversation, to.service);
+                }),
+            );
         },
 
         async schedules(chat) {

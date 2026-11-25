@@ -45,6 +45,10 @@ export const envSchema = z.object({
     OPENROUTER_BASE_URL: textWithDefault("https://openrouter.ai/api/v1"),
 
     MODEL_MAIN: optionalNonEmpty,
+    /** JSON provider catalog; defaults to `<STATE_DIR>/models.json`. */
+    MODELS_PATH: optionalNonEmpty,
+    /** Where `/setmodel` remembers the active model; defaults to `<STATE_DIR>/model.json`. */
+    MODEL_SELECTION_PATH: optionalNonEmpty,
     SYSTEM_PROMPT: optionalNonEmpty,
     /** Persona file; defaults to the SOUL.md shipped with @eien/agent. */
     SOUL_PATH: optionalNonEmpty,

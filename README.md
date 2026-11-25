@@ -77,6 +77,22 @@ Any OpenAI-compatible endpoint works. OpenRouter attribution headers are only
 added for openrouter.ai. The bot uses long polling, so no inbound ports are
 needed.
 
+To use several providers (and switch with `/setmodel`), create
+`state/models.json` next to `eien.sqlite`; `models.example.json` shows the
+format. Each provider needs `baseUrl` and either `apiKey` or `apiKeyEnv` (an env
+var name). The selected model is `provider/model-id` and persists in
+`state/model.json`. Without `models.json` the single `LLM_*` endpoint above is
+used.
+
+## Models
+
+`/models` renders every catalog model as a one-tap Telegram button, with `*` on
+the active one. Tapping a button switches immediately for all chats and
+remembers the choice across restarts (a new message confirms it).
+`/setmodel <ref>` does the same from text. A bare model id works when it is
+unambiguous; otherwise use `provider/model-id`. Edit `state/models.json` and
+restart to add providers, models, or keys.
+
 ## Environment
 
 Validated by `packages/shared/src/env.ts`; empty values count as unset. Secrets
@@ -106,8 +122,9 @@ Tracked examples are `.env.example`, `.env.docker.example`, and
 
 ## Using it
 
-Commands: `/reset`, `/schedules`, `/unschedule <name>`, `/model`, `/status`,
-`/help`. Telegram also has `/id`, which shows chat and user IDs.
+Commands: `/reset`, `/schedules`, `/unschedule <name>`, `/model`, `/models`,
+`/setmodel <ref>`, `/status`, `/help`. Telegram also has `/id`, which shows chat
+and user IDs.
 
 **Users.** This is a single-user deployment: one bot token, one allowlist, one
 sandbox and one `/work`. Set `ALLOWED_TELEGRAM_USER_IDS` to just your numeric
