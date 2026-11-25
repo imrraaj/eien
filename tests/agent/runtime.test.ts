@@ -205,4 +205,18 @@ describe("agent runtime", () => {
 
         await runtime.close();
     });
+
+    test("prefixes a shared-chat message with its sender", async () => {
+        const out = recordingOutbox();
+        const runtime = await open(out.outbox, join(dir, "memory-author.md"));
+
+        await runtime.prompt(chat, "who am I?", "author-1", [], {
+            author: { id: "42", name: "Ada Lovelace", username: "ada" },
+        });
+        await out.until((message) => message.kind === "text" && message.text.includes("who am I?"));
+        const user = [...(model.requests.at(-1)?.messages ?? [])].reverse().find((message) => message.role === "user");
+        expect(String(user?.content)).toContain("[sender: Ada Lovelace (@ada), user id: 42]");
+
+        await runtime.close();
+    });
 });

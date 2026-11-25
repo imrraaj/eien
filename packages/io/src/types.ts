@@ -15,6 +15,13 @@ export interface Attachment {
     readonly size: number;
 }
 
+/** Who sent a message inside a shared chat. The id is authoritative; name/username are user-controlled. */
+export interface Author {
+    readonly id: string;
+    readonly name: string;
+    readonly username?: string;
+}
+
 export type InboundEvent =
     | {
           readonly kind: "message";
@@ -23,6 +30,10 @@ export type InboundEvent =
           readonly id: string;
           readonly text: string;
           readonly attachments: readonly Attachment[];
+          /** Present when the chat can contain several people, e.g. a group. */
+          readonly author?: Author;
+          /** The user replied to one of this service's own messages; a hint to steer the run in flight. */
+          readonly replyToBot?: boolean;
       }
     | {
           readonly kind: "command";
@@ -71,7 +82,7 @@ export type OutboundMessage =
           readonly size: number;
           readonly caption?: string;
       }
-    | { readonly kind: "status"; readonly status: "working" | "queued" | "idle" };
+    | { readonly kind: "status"; readonly status: "working" | "queued" | "steered" | "idle" };
 
 /** A destination for agent output. Limits it cannot meet come back as `DeliveryFailed`, never as a throw. */
 export interface OutputService {

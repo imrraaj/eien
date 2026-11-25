@@ -6,6 +6,7 @@ export { scrubDashes } from "./style.ts";
 export type {
     Address,
     Attachment,
+    Author,
     Choice,
     InboundEvent,
     InboundSink,

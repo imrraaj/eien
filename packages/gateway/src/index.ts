@@ -168,7 +168,10 @@ async function main(): Promise<void> {
             return reply(event.from, `Message too long (${event.text.length} chars). The limit is ${MAX_INPUT_CHARS}.`);
         }
         if (!event.text && event.attachments.length === 0) return reply(event.from, "How can I help?");
-        const admitted = await runtime.prompt(event.from, event.text, event.id, event.attachments);
+        const admitted = await runtime.prompt(event.from, event.text, event.id, event.attachments, {
+            steer: event.replyToBot === true,
+            author: event.author,
+        });
         if (admitted.isErr()) await reply(event.from, `Could not store the attachment: ${admitted.error.message}`);
     }
 

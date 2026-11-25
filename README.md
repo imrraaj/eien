@@ -129,25 +129,30 @@ Commands: `/reset`, `/schedules`, `/unschedule <name>`, `/model`, `/models`,
 `/setmodel <ref>`, `/status`, `/help`. Telegram also has `/id`, which shows chat
 and user IDs.
 
-**Users.** This is a single-user deployment: one bot token, one allowlist, one
-sandbox and one `/work`. Set `ALLOWED_TELEGRAM_USER_IDS` to just your numeric
-Telegram user ID; anyone else is ignored. Each private chat has its own
-conversation, and a group shares one.
+**Users.** `ALLOWED_TELEGRAM_USER_IDS` accepts several numeric Telegram user IDs;
+anyone else is ignored. Each private chat has its own conversation, so two
+people messaging the bot privately get separate threads. A group shares one
+conversation. Everyone still shares the sandbox, `/work`, memory file, model
+selection, and limits.
 
 **Groups.** The bot answers when named (`eien` or `eienbot` anywhere in the
 message), mentioned (`@yourbot ...`), replied to, and for commands. Names are
 matched as whole words, case-insensitively, and only the addressing occurrence
-is stripped. Telegram's privacy mode already delivers mentions and replies;
-disable it in BotFather (`/setprivacy`) if the bot should see every group
-message.
+is stripped. Each group message sent to the model is prefixed with the sender's
+display name, `@username`, and numeric user id; the id is authoritative because
+display names are user-controlled. Telegram's privacy mode already delivers
+mentions and replies; disable it in BotFather (`/setprivacy`) if the bot should
+see every group message.
 
 **Feedback.** As soon as a message is accepted the bot replies with a
 "Thinking…" placeholder and edits that same message with the answer when the
 run finishes, so long runs don't look stalled.
 
-**Steering.** A message sent while a run is working steers it: the bot says it
-will fold it in, and pi-durable places the message after the current tool round.
-A single long tool call still has to finish first.
+**Steering.** While a run is working, replying to one of the bot's messages
+folds the new message into that run — its placeholder becomes "Folded into the
+current reply." Any other message is queued as a separate request and gets its
+own run and answer once the current one finishes. A single long tool call still
+has to finish before either is seen.
 
 **Long runs.** Short runs only show typing. A run still going after a minute
 gets a "still on it" message. Single bash commands may run up to 15 minutes.

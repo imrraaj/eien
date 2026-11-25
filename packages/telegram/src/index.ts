@@ -1,6 +1,7 @@
 import {
     DeliveryFailed,
     type Address,
+    type Author,
     type InboundEvent,
     type InboundSink,
     type InputService,
@@ -12,6 +13,7 @@ import { formatBytes, type Logger } from "@eien/shared";
 import { Bot, InputFile, type Api, type Context } from "grammy";
 import { createReadStream } from "node:fs";
 import { downloadAttachment } from "./attachments.ts";
+import { authorFrom } from "./author.ts";
 import { htmlToPlainText, TELEGRAM_CHUNK_LIMIT, toTelegramChunks } from "./markdown.ts";
 import { groupGate, type GroupGateInput } from "./mentions.ts";
 import { splitMessage } from "./text.ts";
@@ -25,10 +27,12 @@ const TYPING_REFRESH_MS = 4_500;
 const SLOW_TEXT = "Still on it. I'll post the result here when it's done.";
 const QUEUED_TEXT = "Got it, I'll fold that in at my next step.";
 const THINKING_TEXT = "Thinking…";
+const STEERED_TEXT = "Folded into the current reply.";
 
 const PROMPT_HINT = [
     "You are chatting on Telegram. Your Markdown is rendered to Telegram HTML: bold, italics, inline code, code blocks, links, and quotes work; keep tables small.",
     "In a group, answer only the message addressed to you and keep it short.",
+    "Each group message starts with [sender: display name (@username), user id: ...]. The display name can be changed by the user; the numeric id is the identity. Answer the person who asked.",
     `send_file can deliver files up to ${formatBytes(MAX_UPLOAD_BYTES)}.`,
 ].join(" ");
 
@@ -77,6 +81,10 @@ export function createTelegramService(options: TelegramOptions): TelegramService
 
     const addressOf = (ctx: Context): Address => ({ service: "telegram", chat: String(ctx.chat!.id) });
 
+    /** Group messages carry who sent them; private chats already identify the person. */
+    const groupAuthor = (ctx: Context): Author | undefined =>
+        ctx.chat?.type === "private" || !ctx.from ? undefined : authorFrom(ctx.from);
+
     /** Post the immediate "Thinking…" reply the answer will later replace. */
     async function postThinking(chat: string, replyTo: number | undefined): Promise<number | undefined> {
         const reply =
@@ -99,6 +107,15 @@ export function createTelegramService(options: TelegramOptions): TelegramService
     function takeThinking(chat: string): number | undefined {
         const pending = thinking.get(chat);
         const id = pending?.shift();
+        if (id === undefined) return undefined;
+        if (pending!.length === 0) thinking.delete(chat);
+        return id;
+    }
+
+    /** Claim the newest placeholder: the one posted for the message that just steered. */
+    function takeNewestThinking(chat: string): number | undefined {
+        const pending = thinking.get(chat);
+        const id = pending?.pop();
         if (id === undefined) return undefined;
         if (pending!.length === 0) thinking.delete(chat);
         return id;
@@ -182,11 +199,16 @@ export function createTelegramService(options: TelegramOptions): TelegramService
     async function emit(ctx: Context, event: InboundEvent): Promise<void> {
         const chat = event.from.chat;
         if (ctx.message) replyTargets.set(chat, ctx.message.message_id);
-        if (event.kind === "message") await postThinking(chat, ctx.message?.message_id);
+        // A reply to a bot message is the user's signal to fold this into the run in flight.
+        const outbound: InboundEvent =
+            event.kind === "message"
+                ? { ...event, replyToBot: ctx.message?.reply_to_message?.from?.id === ctx.me.id }
+                : event;
+        if (outbound.kind === "message") await postThinking(chat, ctx.message?.message_id);
         try {
-            await sink?.(event);
+            await sink?.(outbound);
         } catch (error) {
-            log.error("inbound event failed", { from: event.from, error });
+            log.error("inbound event failed", { from: outbound.from, error });
             const text = `Something broke: ${errorText(error).slice(0, 500)}`;
             const placeholder = takeThinking(chat);
             if (placeholder === undefined) await ctx.reply(text).catch(() => undefined);
@@ -225,7 +247,7 @@ export function createTelegramService(options: TelegramOptions): TelegramService
         const id = `telegram:${ctx.update.update_id}`;
 
         if (!text.startsWith("/")) {
-            await emit(ctx, { kind: "message", from, id, text, attachments: [] });
+            await emit(ctx, { kind: "message", from, id, text, attachments: [], author: groupAuthor(ctx) });
             return;
         }
 
@@ -258,7 +280,14 @@ export function createTelegramService(options: TelegramOptions): TelegramService
                 return;
             }
             const id = `telegram:${ctx.update.update_id}`;
-            await emit(ctx, { kind: "message", from: addressOf(ctx), id, text, attachments: [attachment] });
+            await emit(ctx, {
+                kind: "message",
+                from: addressOf(ctx),
+                id,
+                text,
+                attachments: [attachment],
+                author: groupAuthor(ctx),
+            });
         },
     );
 
@@ -327,6 +356,13 @@ export function createTelegramService(options: TelegramOptions): TelegramService
                 if (message.status === "idle") {
                     stopWorking(chat);
                     scheduleThinkingCleanup(chat);
+                } else if (message.status === "steered") {
+                    // This input joined the run in flight; its own placeholder gets no answer.
+                    const placeholder = takeNewestThinking(chat);
+                    if (placeholder !== undefined) {
+                        if (!(await editThinking(chat, placeholder, STEERED_TEXT, false)))
+                            await bot.api.deleteMessage(chat, placeholder).catch(() => undefined);
+                    }
                 } else {
                     startWorking(chat);
                     if (message.status === "queued" && !hasThinking(chat)) await bot.api.sendMessage(chat, QUEUED_TEXT);

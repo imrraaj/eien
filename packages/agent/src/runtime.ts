@@ -16,6 +16,7 @@ import {
     parseAddressKey,
     type Address,
     type Attachment,
+    type Author,
     type DeliveryFailed,
     type OutboundMessage,
 } from "@eien/io";
@@ -64,6 +65,14 @@ export interface ModelRef {
     modelId: string;
 }
 
+/** How to handle an input that arrives while a run is already in flight. */
+export interface PromptOptions {
+    /** The user replied to the bot: fold this into the running turn instead of queueing a new run. */
+    steer?: boolean;
+    /** Who sent a shared-chat message; omitted for private chats. */
+    author?: Author;
+}
+
 /** The durable agent loop. It knows addresses, never the services behind them. */
 export interface AgentRuntime {
     /**
@@ -75,6 +84,7 @@ export interface AgentRuntime {
         text: string,
         requestId: string,
         attachments?: readonly Attachment[],
+        options?: PromptOptions,
     ): Promise<Result<void, CommandFailed>>;
     reset(chat: Address): Promise<void>;
     /** Switch every open conversation to another model in the registry. */
@@ -93,6 +103,13 @@ function failureText(settled: SettledSubmissionRecord): string | undefined {
             ? ""
             : `: ${typeof settled.detail === "string" ? settled.detail : JSON.stringify(settled.detail)}`;
     return `That run failed (${settled.reason}${detail}).`;
+}
+
+/** Prefix a shared-chat message with stable sender metadata; the id is authoritative. */
+function attributed(text: string, author?: Author): string {
+    if (!author) return text;
+    const handle = author.username ? ` (@${author.username})` : "";
+    return `[sender: ${author.name}${handle}, user id: ${author.id}]\n\n${text}`;
 }
 
 export async function createAgentRuntime(options: RuntimeOptions): Promise<AgentRuntime> {
@@ -269,20 +286,29 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
     log.info("durable runtime ready", { chats: conversations.size });
 
     return {
-        async prompt(from, text, requestId, attachments = []) {
+        async prompt(from, text, requestId, attachments = [], options = {}) {
             const stored = await intake(sandbox, text, attachments);
             if (stored.isErr()) return stored;
-            const content = stored.value;
+            const content = attributed(stored.value, options.author);
             const memoryText = await memoryForPrompt();
             const conversation = await conversationFor(from, memoryText);
             await syncAgent(conversation, from.service, memoryText);
             const admitted = await conversation.commit(async (tx) => {
                 const busy = (await tx.doc(LiveDoc, conversation.id)).run !== undefined;
-                const id = await conversation.submit(tx, { type: "input", content, requestId, whenBusy: "steer" });
+                const id = await conversation.submit(tx, {
+                    type: "input",
+                    content,
+                    requestId,
+                    whenBusy: options.steer === true ? "steer" : "followUp",
+                });
                 return { busy, id };
             }, CHORD);
 
-            await send(from, { kind: "status", status: admitted.busy ? "queued" : "working" });
+            const steered = admitted.busy && options.steer === true;
+            await send(from, {
+                kind: "status",
+                status: steered ? "steered" : admitted.busy ? "queued" : "working",
+            });
             const submission = await harness.submission(admitted.id, CHORD);
             if (submission) void track(from, submission.wait(CHORD));
             return Result.ok(undefined);
