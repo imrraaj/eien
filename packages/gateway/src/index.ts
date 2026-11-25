@@ -1,9 +1,17 @@
-import { buildInstructions, createAgentRuntime, formatSchedules, loadSoul, operatingManual } from "@eien/agent";
+import {
+    MemoryStore,
+    buildInstructions,
+    createAgentRuntime,
+    formatSchedules,
+    loadSoul,
+    operatingManual,
+} from "@eien/agent";
 import { InputHub, OutputRouter, type Address, type InboundEvent } from "@eien/io";
 import { createLlm, type ModelSelection } from "@eien/llm";
 import { createSandbox, type SandboxConfig } from "@eien/sandbox";
 import { createLogger, loadEnv, type Env } from "@eien/shared";
 import { createTelegramService } from "@eien/telegram";
+import { join, resolve } from "node:path";
 
 const MAX_INPUT_CHARS = 8_000;
 
@@ -46,6 +54,7 @@ async function main(): Promise<void> {
     const llm = createLlm(env);
     const sandbox = createSandbox(sandboxConfig(env));
     const storagePath = `${env.STATE_DIR}/eien.sqlite`;
+    const memory = new MemoryStore(resolve(env.MEMORY_PATH ?? join(env.STATE_DIR, "memory.md")), env.MEMORY_MAX_BYTES);
     const base =
         env.SYSTEM_PROMPT ?? `${await loadSoul(env.SOUL_PATH)}\n\n${operatingManual(sandbox.name, sandbox.root)}`;
 
@@ -66,6 +75,7 @@ async function main(): Promise<void> {
         sandbox,
         web: { mcpUrl: env.EXA_MCP_URL, exaApiKey: env.EXA_API_KEY },
         outbox: outputs,
+        memory,
         instructions: (service) => buildInstructions(base, outputs.promptHint(service)),
         log,
     });
@@ -136,6 +146,7 @@ async function main(): Promise<void> {
                         `model: ${llm.selection.ref}`,
                         `max turns/run: ${env.MAX_AGENT_STEPS}`,
                         `storage: ${storagePath}`,
+                        `memory: ${memory.path}`,
                     ].join("\n"),
                 );
             default:
@@ -179,6 +190,7 @@ async function main(): Promise<void> {
         model: llm.selection.ref,
         sandbox: `${sandbox.driver} (${sandbox.name})`,
         storage: storagePath,
+        memory: memory.path,
     });
 }
 

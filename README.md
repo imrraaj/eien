@@ -5,7 +5,8 @@ loop runs on **pi-durable** with SQLite storage, so runs, schedules, and
 background workers survive restarts. Tools run inside a small **Docker**
 sandbox: one long-lived Linux container, with each command executed through
 `docker exec`. No KVM or SSH server is required: `bash`, `read`, `write`,
-`edit`, `send_file`, `web_search`, `web_fetch`, `subagent`, `schedule`.
+`edit`, `send_file`, `web_search`, `web_fetch`, `subagent`, `schedule`, and the
+control-plane memory tools.
 
 ## Architecture
 
@@ -107,18 +108,20 @@ Three files, all gitignored:
 Tracked examples are `.env.example`, `.env.docker.example`, and
 `.env.sbx.example`. Shell environment variables win over all three files.
 
-| Variable                     | Default               | Purpose                                              |
-| ---------------------------- | --------------------- | ---------------------------------------------------- |
-| `STATE_DIR`                  | `state`               | holds `eien.sqlite`                                  |
-| `MAX_AGENT_STEPS`            | `100`                 | model turns per run (hard cap 100)                   |
-| `SOUL_PATH`                  | bundled `SOUL.md`     | persona file                                         |
-| `SYSTEM_PROMPT`              | unset                 | replaces persona and operating manual entirely       |
-| `SANDBOX_DRIVER`             | `docker`              | `docker` (no KVM) or `sbx` (Docker Sandboxes on KVM) |
-| `SANDBOX_DOCKER_IMAGE`       | `eien/sandbox:local`  | image built by `sandbox/bootstrap.sh`                |
-| `SANDBOX_DOCKER_NETWORK`     | `bridge`              | `bridge` or `none` for the sandbox network           |
-| `SBX_NAME`, `SBX_WORKDIR`    | `agent-1`, `/work`    | container name and workspace                         |
-| `EXA_MCP_URL`, `EXA_API_KEY` | Exa hosted MCP, unset | web tools; the key only raises limits                |
-| `LOG_LEVEL`                  | `info`                | `debug`, `info`, `warn`, `error`                     |
+| Variable                     | Default                | Purpose                                              |
+| ---------------------------- | ---------------------- | ---------------------------------------------------- |
+| `STATE_DIR`                  | `state`                | holds `eien.sqlite`                                  |
+| `MEMORY_PATH`                | `$STATE_DIR/memory.md` | control-plane memory file                            |
+| `MEMORY_MAX_BYTES`           | `65536`                | memory file cap                                      |
+| `MAX_AGENT_STEPS`            | `100`                  | model turns per run (hard cap 100)                   |
+| `SOUL_PATH`                  | bundled `SOUL.md`      | persona file                                         |
+| `SYSTEM_PROMPT`              | unset                  | replaces persona and operating manual entirely       |
+| `SANDBOX_DRIVER`             | `docker`               | `docker` (no KVM) or `sbx` (Docker Sandboxes on KVM) |
+| `SANDBOX_DOCKER_IMAGE`       | `eien/sandbox:local`   | image built by `sandbox/bootstrap.sh`                |
+| `SANDBOX_DOCKER_NETWORK`     | `bridge`               | `bridge` or `none` for the sandbox network           |
+| `SBX_NAME`, `SBX_WORKDIR`    | `agent-1`, `/work`     | container name and workspace                         |
+| `EXA_MCP_URL`, `EXA_API_KEY` | Exa hosted MCP, unset  | web tools; the key only raises limits                |
+| `LOG_LEVEL`                  | `info`                 | `debug`, `info`, `warn`, `error`                     |
 
 ## Using it
 
@@ -173,15 +176,32 @@ prompt hint.
 
 ## Tools
 
-| Tool                            | Runs where      | Purpose                                       |
-| ------------------------------- | --------------- | --------------------------------------------- |
-| `bash`, `read`, `write`, `edit` | sandbox         | coding work in `/work` (paths confined there) |
-| `send_file`                     | sandbox to chat | send a workspace file to the current chat     |
-| `web_search`, `web_fetch`       | host            | current information via Exa's hosted MCP      |
-| `subagent`                      | host            | persistent background workers                 |
-| `schedule`                      | host            | durable one-shot or repeating timers          |
+| Tool                                            | Runs where      | Purpose                                       |
+| ----------------------------------------------- | --------------- | --------------------------------------------- |
+| `bash`, `read`, `write`, `edit`                 | sandbox         | coding work in `/work` (paths confined there) |
+| `send_file`                                     | sandbox to chat | send a workspace file to the current chat     |
+| `web_search`, `web_fetch`                       | host            | current information via Exa's hosted MCP      |
+| `subagent`                                      | host            | persistent background workers                 |
+| `schedule`                                      | host            | durable one-shot or repeating timers          |
+| `memory_read`, `memory_write`, `memory_replace` | control plane   | persistent memory file, outside the sandbox   |
 
 Web and repo content is treated as untrusted data by the prompt.
+
+### Memory
+
+Persistent memory is a single file on the control plane, outside the sandbox.
+The model reaches it only through three tools:
+
+- `memory_read` returns the file.
+- `memory_write` appends by default, or rewrites the whole file with `mode: "replace"`.
+- `memory_replace` updates exactly one matching block, without rewriting everything.
+
+The file defaults to `$STATE_DIR/memory.md` (`MEMORY_PATH` overrides it) and is
+capped at `MEMORY_MAX_BYTES` (64 KiB by default). Reads and writes are
+serialized, so concurrent chats and subagents cannot lose updates. The prompt
+tells the model to store durable preferences, project rules, and recurring
+instructions, and never to store secrets or instructions copied from untrusted
+content. The sandbox cannot see the file.
 
 ### Browser
 

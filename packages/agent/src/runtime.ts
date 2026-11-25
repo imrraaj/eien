@@ -24,9 +24,11 @@ import type { Sandbox } from "@eien/sandbox";
 import type { Logger } from "@eien/shared";
 import { Result } from "better-result";
 import type { CommandFailed } from "@eien/sandbox";
+import { dirname, join } from "node:path";
 import type { WebOptions } from "./web.ts";
 import { Chats, Delivery } from "./chats.ts";
 import { answerText, callsTools } from "./entries.ts";
+import { MemoryStore, createMemoryTools } from "./memory.ts";
 import type { ScheduleInfo } from "./schedule-text.ts";
 import { Schedule, Schedules, removeSchedule, scheduleInfos, scheduleTool } from "./schedules.ts";
 import { openSqliteStorage } from "./sqlite.ts";
@@ -50,6 +52,8 @@ export interface RuntimeOptions {
     sandbox: Sandbox;
     web: WebOptions;
     outbox: Outbox;
+    /** Durable control-plane memory; defaults to memory.md next to the SQLite file. */
+    memory?: MemoryStore;
     /** System prompt for chats on a service. */
     instructions: (service: string) => string;
     log: Logger;
@@ -93,6 +97,7 @@ function failureText(settled: SettledSubmissionRecord): string | undefined {
 
 export async function createAgentRuntime(options: RuntimeOptions): Promise<AgentRuntime> {
     const { sandbox, outbox, log } = options;
+    const memory = options.memory ?? new MemoryStore(join(dirname(options.storagePath), "memory.md"));
     /** The active model; `/setmodel` updates it and reconfigures every open conversation. */
     let currentModel: ModelRef = options.model;
 
@@ -117,7 +122,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
     const toolsExtension = defineExtension({
         name: "eien-tools",
         tasks: [Schedule],
-        tools: [...createWorkTools(sandbox, options.web, deliverFile), scheduleTool],
+        tools: [...createWorkTools(sandbox, options.web, deliverFile), ...createMemoryTools(memory), scheduleTool],
     });
     const registry = createRegistry();
     registry.install(toolsExtension);

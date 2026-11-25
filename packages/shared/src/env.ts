@@ -32,6 +32,9 @@ export const envSchema = z.object({
     NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
     LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
     STATE_DIR: textWithDefault("state"),
+    /** Control-plane memory file; defaults to STATE_DIR/memory.md. */
+    MEMORY_PATH: optionalNonEmpty,
+    MEMORY_MAX_BYTES: intWithDefault(64 * 1024),
 
     // Any OpenAI-compatible endpoint. OpenRouter is the default, and the legacy
     // OPENROUTER_* names are still read as fallbacks.
