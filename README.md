@@ -166,13 +166,15 @@ runs as an unprivileged user, so `apt-get` is not available.
 
 ## Persona
 
-`packages/agent/SOUL.md` defines who the bot is: voice, length, how it handles
-disagreement and uncertainty. It is kept apart from the operating manual (tools,
-sandbox, scheduling) in `packages/agent/src/prompt.ts`, so the voice can change
-without touching the mechanics. Point `SOUL_PATH` at your own file to replace it.
+`packages/agent/SOUL.md` is the only source of the bot's character: voice,
+length, how it handles disagreement and uncertainty. It is kept apart from the
+operating manual (tools, sandbox, memory, scheduling) in
+`packages/agent/src/prompt.ts`, and from the runtime memory file. Point
+`SOUL_PATH` at your own file to replace it.
 
-The system prompt is built as: persona, operating manual, then the service's
-prompt hint.
+The system prompt is composed as: persona, operating manual, current memory
+(capped at 8 KiB), then the service's prompt hint. Nothing about the character
+is hardcoded in the gateway.
 
 ## Tools
 
@@ -197,11 +199,14 @@ The model reaches it only through three tools:
 - `memory_replace` updates exactly one matching block, without rewriting everything.
 
 The file defaults to `$STATE_DIR/memory.md` (`MEMORY_PATH` overrides it) and is
-capped at `MEMORY_MAX_BYTES` (64 KiB by default). Reads and writes are
-serialized, so concurrent chats and subagents cannot lose updates. The prompt
-tells the model to store durable preferences, project rules, and recurring
-instructions, and never to store secrets or instructions copied from untrusted
-content. The sandbox cannot see the file.
+capped at `MEMORY_MAX_BYTES` (64 KiB by default). Its current contents are also
+injected into the system prompt, up to 8 KiB, so a normal task usually does not
+need a separate read; `memory_read` returns the exact full file when the
+injected copy was truncated. Reads and writes are serialized, so concurrent
+chats and subagents cannot lose updates. The prompt tells the model to store
+durable preferences, project rules, and recurring instructions, and never to
+store secrets or instructions copied from untrusted content. The sandbox cannot
+see the file.
 
 ### Browser
 

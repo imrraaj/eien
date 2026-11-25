@@ -8,6 +8,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAgentRuntime, type AgentRuntime } from "../../packages/agent/src/runtime.ts";
+import { MemoryStore } from "../../packages/agent/src/memory.ts";
 
 /** OpenAI-compatible endpoint that streams "echo: <last user message>" and records each request. */
 function fakeModelServer() {
@@ -79,7 +80,10 @@ describe("agent runtime", () => {
         await rm(dir, { recursive: true, force: true });
     });
 
-    async function open(outbox: ReturnType<typeof recordingOutbox>["outbox"]): Promise<AgentRuntime> {
+    async function open(
+        outbox: ReturnType<typeof recordingOutbox>["outbox"],
+        memoryPath?: string,
+    ): Promise<AgentRuntime> {
         const env = loadEnv({
             LLM_BASE_URL: `http://localhost:${model.server.port}/v1`,
             LLM_API_KEY: "x",
@@ -94,7 +98,9 @@ describe("agent runtime", () => {
             sandbox,
             web: { mcpUrl: "http://localhost:1" },
             outbox,
-            instructions: (service) => `test prompt for ${service}`,
+            memory: memoryPath ? new MemoryStore(memoryPath) : undefined,
+            instructions: (service, memoryText) =>
+                `test prompt for ${service}${memoryText ? `\n\n<memory>${memoryText}</memory>` : ""}`,
             log: createLogger({ level: (process.env.TEST_LOG as "debug") ?? "error" }),
         });
     }
@@ -178,5 +184,25 @@ describe("agent runtime", () => {
         await runtime.close();
 
         expect(model.requests.at(-1)?.model).toBe("other");
+    });
+
+    test("injects current memory and refreshes it before the next run", async () => {
+        const memoryPath = join(dir, "memory-prompt.md");
+        await writeFile(memoryPath, "likes Bun");
+        const out = recordingOutbox();
+        const runtime = await open(out.outbox, memoryPath);
+
+        await runtime.prompt(chat, "first memory", "memory-1");
+        await out.until((message) => message.kind === "text" && message.text === "echo: first memory");
+        expect(String(model.requests.at(-1)?.messages[0]?.content)).toContain("likes Bun");
+
+        await writeFile(memoryPath, "likes TypeScript");
+        await runtime.prompt(chat, "second memory", "memory-2");
+        await out.until((message) => message.kind === "text" && message.text === "echo: second memory");
+        const system = String(model.requests.at(-1)?.messages[0]?.content);
+        expect(system).toContain("likes TypeScript");
+        expect(system).not.toContain("likes Bun");
+
+        await runtime.close();
     });
 });

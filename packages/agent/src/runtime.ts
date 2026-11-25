@@ -54,8 +54,8 @@ export interface RuntimeOptions {
     outbox: Outbox;
     /** Durable control-plane memory; defaults to memory.md next to the SQLite file. */
     memory?: MemoryStore;
-    /** System prompt for chats on a service. */
-    instructions: (service: string) => string;
+    /** System prompt for chats on a service, given the current memory contents. */
+    instructions: (service: string, memory: string) => string;
     log: Logger;
 }
 
@@ -98,6 +98,16 @@ function failureText(settled: SettledSubmissionRecord): string | undefined {
 export async function createAgentRuntime(options: RuntimeOptions): Promise<AgentRuntime> {
     const { sandbox, outbox, log } = options;
     const memory = options.memory ?? new MemoryStore(join(dirname(options.storagePath), "memory.md"));
+
+    /** Current memory for the system prompt; a read failure degrades to no injected memory. */
+    async function memoryForPrompt(): Promise<string> {
+        const read = await memory.read();
+        if (read.isErr()) {
+            log.warn("could not read memory for the prompt", { error: read.error });
+            return "";
+        }
+        return read.value;
+    }
     /** The active model; `/setmodel` updates it and reconfigures every open conversation. */
     let currentModel: ModelRef = options.model;
 
@@ -141,17 +151,17 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
         setTimeout(() => process.exit(1), 100);
     });
 
-    const agentFor = (service: string) =>
+    const agentFor = (service: string, memoryText: string) =>
         ({
             model: { provider: currentModel.provider, modelId: currentModel.modelId },
-            instructions: options.instructions(service),
+            instructions: options.instructions(service, memoryText),
             cwd: sandbox.root,
             maxTurns: options.maxTurns,
         }) satisfies AgentChange;
 
     /** Conversations keep the settings they were created with; bring them up to date after a config change. */
-    async function syncAgent(conversation: Conversation, service: string): Promise<void> {
-        const want = agentFor(service);
+    async function syncAgent(conversation: Conversation, service: string, memoryText: string): Promise<void> {
+        const want = agentFor(service, memoryText);
         const have = await conversation.agent(CHORD);
         const stale =
             have.model?.provider !== want.model.provider ||
@@ -188,15 +198,15 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
         });
     }
 
-    async function attach(conversation: Conversation, to: Address): Promise<Conversation> {
+    async function attach(conversation: Conversation, to: Address, memoryText: string): Promise<Conversation> {
         addresses.set(conversation.id, to);
-        await syncAgent(conversation, to.service);
+        await syncAgent(conversation, to.service, memoryText);
         await deliverAnswers(conversation, to);
         return conversation;
     }
 
     /** The chat's conversation, created and mapped in one commit the first time the chat speaks. */
-    async function openOrCreate(to: Address): Promise<Conversation> {
+    async function openOrCreate(to: Address, memoryText: string): Promise<Conversation> {
         const key = addressKey(to);
         const id = await harness.commit(async (tx) => {
             const chats = await tx.doc(Chats);
@@ -204,7 +214,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
             if (known !== undefined) return known;
             const created = await tx.createConversation({ ownership: { kind: "ownerless" } });
             await configure(tx, created.id, {
-                ...agentFor(to.service),
+                ...agentFor(to.service, memoryText),
                 extensions: [toolsExtension, SubagentExtension],
             });
             chats.conversations[key] = created.id;
@@ -212,15 +222,15 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
         }, CHORD);
         const conversation = await harness.conversation(id, CHORD);
         if (!conversation) throw new Error(`conversation ${id} for ${key} is missing`);
-        return attach(conversation, to);
+        return attach(conversation, to, memoryText);
     }
 
     /** One open per chat, even when messages race in before the first open finishes. */
-    function conversationFor(to: Address): Promise<Conversation> {
+    function conversationFor(to: Address, memoryText: string): Promise<Conversation> {
         const key = addressKey(to);
         let conversation = conversations.get(key);
         if (!conversation) {
-            conversation = openOrCreate(to);
+            conversation = openOrCreate(to, memoryText);
             conversations.set(key, conversation);
             conversation.catch(() => conversations.delete(key));
         }
@@ -248,10 +258,11 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
 
     // Reattach every known chat, then let work the last process left run again.
     const known = await harness.commit(async (tx) => Object.entries((await tx.doc(Chats)).conversations), CHORD);
+    const bootMemory = await memoryForPrompt();
     for (const [key, id] of known) {
         const to = parseAddressKey(key);
         const conversation = to && (await harness.conversation(id, CHORD));
-        if (to && conversation) conversations.set(key, attach(conversation, to));
+        if (to && conversation) conversations.set(key, attach(conversation, to, bootMemory));
     }
     await Promise.all(conversations.values());
     harness.resume();
@@ -262,7 +273,9 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
             const stored = await intake(sandbox, text, attachments);
             if (stored.isErr()) return stored;
             const content = stored.value;
-            const conversation = await conversationFor(from);
+            const memoryText = await memoryForPrompt();
+            const conversation = await conversationFor(from, memoryText);
+            await syncAgent(conversation, from.service, memoryText);
             const admitted = await conversation.commit(async (tx) => {
                 const busy = (await tx.doc(LiveDoc, conversation.id)).run !== undefined;
                 const id = await conversation.submit(tx, { type: "input", content, requestId, whenBusy: "steer" });
@@ -276,22 +289,23 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
         },
 
         async reset(chat) {
-            await (await conversationFor(chat)).reset(undefined, CHORD);
+            await (await conversationFor(chat, await memoryForPrompt())).reset(undefined, CHORD);
         },
 
         async setModel(model) {
             currentModel = model;
+            const memoryText = await memoryForPrompt();
             await Promise.all(
                 [...conversations.values()].map(async (pending) => {
                     const conversation = await pending;
                     const to = addresses.get(conversation.id);
-                    if (to !== undefined) await syncAgent(conversation, to.service);
+                    if (to !== undefined) await syncAgent(conversation, to.service, memoryText);
                 }),
             );
         },
 
         async schedules(chat) {
-            const conversation = await conversationFor(chat);
+            const conversation = await conversationFor(chat, await memoryForPrompt());
             // Copy inside the commit: document drafts die once it settles.
             return conversation.commit(
                 async (tx) => scheduleInfos((await tx.doc(Schedules, conversation.id)).items),
@@ -300,7 +314,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
         },
 
         async cancelSchedule(chat, name) {
-            const conversation = await conversationFor(chat);
+            const conversation = await conversationFor(chat, await memoryForPrompt());
             return conversation.commit((tx) => removeSchedule(tx, conversation.id, name), CHORD);
         },
 

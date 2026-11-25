@@ -76,7 +76,7 @@ async function main(): Promise<void> {
         web: { mcpUrl: env.EXA_MCP_URL, exaApiKey: env.EXA_API_KEY },
         outbox: outputs,
         memory,
-        instructions: (service) => buildInstructions(base, outputs.promptHint(service)),
+        instructions: (service, memoryText) => buildInstructions(base, outputs.promptHint(service), memoryText),
         log,
     });
 
