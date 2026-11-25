@@ -1,6 +1,6 @@
 # eien: always-on coding agent
 
-A personal coding agent you talk to over Telegram (a web app is next). The agent
+A personal coding agent you talk to over Telegram, the web app, or both. The agent
 loop runs on **pi-durable** with SQLite storage, so runs, schedules, and
 background workers survive restarts. Tools run inside a small **Docker**
 sandbox: one long-lived Linux container, with each command executed through
@@ -12,7 +12,7 @@ control-plane memory tools.
 
 ```
  Telegram ─┐                                         ┌─> Telegram
- Web (soon)┼─> InputHub ─> gateway ─> agent runtime ─> OutputRouter ┼─> Web (soon)
+ Web       ┼─> InputHub ─> gateway ─> agent runtime ─> OutputRouter ┼─> Web
  ...      ─┘   (@eien/io)  commands    (@eien/agent)   (@eien/io)  └─> ...
                                          │
                                          ├─ pi-durable + SQLite (state/eien.sqlite)
@@ -47,10 +47,11 @@ await inputs.add(web);
 ## Quick start
 
 ```bash
-cp .env.example .env                 # shared: LLM + Telegram
+cp .env.example .env                 # shared: LLM + at least one channel
 cp .env.docker.example .env.docker   # or .env.sbx.example
 bun install
 ./sandbox/bootstrap.sh               # build the image and create the container
+bun run web:build                    # only if you use the web app
 bun run bot:docker
 ```
 
@@ -66,12 +67,14 @@ Docker bootstrap needs a running daemon and a user that can talk to it (the
 Required in `.env`:
 
 ```dotenv
-TELEGRAM_BOT_TOKEN=...
-ALLOWED_TELEGRAM_USER_IDS=123456789   # comma-separated numeric IDs
-
 LLM_BASE_URL=https://openrouter.ai/api/v1
 LLM_API_KEY=...
 MODEL_MAIN=...                        # or LLM_MODEL
+
+# Telegram, the web app, or both:
+TELEGRAM_BOT_TOKEN=...
+ALLOWED_TELEGRAM_USER_IDS=123456789   # comma-separated numeric IDs
+WEB_ACCESS_TOKEN=...                  # openssl rand -hex 24
 ```
 
 Any OpenAI-compatible endpoint works. OpenRouter attribution headers are only
@@ -108,20 +111,23 @@ Three files, all gitignored:
 Tracked examples are `.env.example`, `.env.docker.example`, and
 `.env.sbx.example`. Shell environment variables win over all three files.
 
-| Variable                     | Default                | Purpose                                              |
-| ---------------------------- | ---------------------- | ---------------------------------------------------- |
-| `STATE_DIR`                  | `state`                | holds `eien.sqlite`                                  |
-| `MEMORY_PATH`                | `$STATE_DIR/memory.md` | control-plane memory file                            |
-| `MEMORY_MAX_BYTES`           | `65536`                | memory file cap                                      |
-| `MAX_AGENT_STEPS`            | `100`                  | model turns per run (hard cap 100)                   |
-| `SOUL_PATH`                  | bundled `SOUL.md`      | persona file                                         |
-| `SYSTEM_PROMPT`              | unset                  | replaces persona and operating manual entirely       |
-| `SANDBOX_DRIVER`             | `docker`               | `docker` (no KVM) or `sbx` (Docker Sandboxes on KVM) |
-| `SANDBOX_DOCKER_IMAGE`       | `eien/sandbox:local`   | image built by `sandbox/bootstrap.sh`                |
-| `SANDBOX_DOCKER_NETWORK`     | `bridge`               | `bridge` or `none` for the sandbox network           |
-| `SBX_NAME`, `SBX_WORKDIR`    | `agent-1`, `/work`     | container name and workspace                         |
-| `EXA_MCP_URL`, `EXA_API_KEY` | Exa hosted MCP, unset  | web tools; the key only raises limits                |
-| `LOG_LEVEL`                  | `info`                 | `debug`, `info`, `warn`, `error`                     |
+| Variable                     | Default                | Purpose                                                |
+| ---------------------------- | ---------------------- | ------------------------------------------------------ |
+| `STATE_DIR`                  | `state`                | holds `eien.sqlite`                                    |
+| `MEMORY_PATH`                | `$STATE_DIR/memory.md` | control-plane memory file                              |
+| `MEMORY_MAX_BYTES`           | `65536`                | memory file cap                                        |
+| `MAX_AGENT_STEPS`            | `100`                  | model turns per run (hard cap 100)                     |
+| `SOUL_PATH`                  | bundled `SOUL.md`      | persona file                                           |
+| `SYSTEM_PROMPT`              | unset                  | replaces persona and operating manual entirely         |
+| `SANDBOX_DRIVER`             | `docker`               | `docker` (no KVM) or `sbx` (Docker Sandboxes on KVM)   |
+| `SANDBOX_DOCKER_IMAGE`       | `eien/sandbox:local`   | image built by `sandbox/bootstrap.sh`                  |
+| `SANDBOX_DOCKER_NETWORK`     | `bridge`               | `bridge` or `none` for the sandbox network             |
+| `SBX_NAME`, `SBX_WORKDIR`    | `agent-1`, `/work`     | container name and workspace                           |
+| `EXA_MCP_URL`, `EXA_API_KEY` | Exa hosted MCP, unset  | web tools; the key only raises limits                  |
+| `LOG_LEVEL`                  | `info`                 | `debug`, `info`, `warn`, `error`                       |
+| `WEB_ACCESS_TOKEN`           | unset                  | enables the web app; at least 24 characters            |
+| `WEB_HOST`, `WEB_PORT`       | `127.0.0.1`, `8787`    | where the web app listens                              |
+| `WEB_ORIGIN`                 | unset                  | public origin(s), needed behind a Host-rewriting proxy |
 
 ## Using it
 
@@ -174,6 +180,34 @@ back. The image has `ffmpeg`, ImageMagick, `pandoc`, poppler, `python3`, `git`,
 `curl`, `jq`, and `ripgrep`. Install Python packages with `pip install --user`
 and Node CLIs with `npm install -g` (it writes to `~/.npm-global`); the sandbox
 runs as an unprivileged user, so `apt-get` is not available.
+
+## Web app
+
+`apps/web` is a React app the gateway serves from `apps/web/dist`, next to its
+API on `WEB_HOST:WEB_PORT`. Set `WEB_ACCESS_TOKEN`, run `bun run web:build`, and
+open `http://127.0.0.1:8787`.
+
+- **One person, one token.** Everyone with the token is the same user, and the
+  token never sits in the browser: the session cookie is an HMAC derived from
+  it (HttpOnly, SameSite=Strict). State-changing requests and the WebSocket
+  check the Origin header against the host, or against `WEB_ORIGIN` when set.
+- **Its own conversation.** Web messages use the `{ service: "web", chat:
+"main" }` address, so the web app has its own transcript and context. It
+  shares the sandbox, memory file, model selection, and schedules with Telegram;
+  answers go back to the channel that asked.
+- **Live view.** The transcript shows every tool call with its output, the
+  answer as it is written, and running tools as they stream. It reads the
+  conversation through `ConversationFeed` in `@eien/io`, keyed by the same
+  address the runtime already uses.
+- **Files.** Attach up to 10 files of 25 MB per message (they land in
+  `/work/uploads`); files the agent sends (up to 100 MB) are downloadable and
+  listed under "files".
+
+For frontend work, run the gateway and `bun run web:dev` side by side: Vite
+proxies `/api` to `WEB_PORT`.
+
+Behind a reverse proxy, pass the original Host through or set `WEB_ORIGIN` to
+the public URL, or sign-in fails with "the server refused this address".
 
 ## Persona
 
@@ -320,6 +354,8 @@ works because the gateway runs on the host.
 packages/io/          input/output contracts, InputHub, OutputRouter
 packages/agent/       durable runtime, tools, schedules, subagents, SQLite adapter, SOUL.md
 packages/telegram/    Telegram input + output service
+packages/web/         web input + output service: HTTP API, WebSocket feed, token auth
+apps/web/             React web app (Vite), served by packages/web
 packages/gateway/     composition root and commands
 packages/llm/         pi-ai model registry for an OpenAI-compatible endpoint
 packages/sandbox/     docker and sbx backends, file helpers, path confinement

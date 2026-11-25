@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Result } from "better-result";
-import type { Address, OutboundMessage } from "../../packages/io/src/index.ts";
+import type { Address, FeedEvent, OutboundMessage } from "../../packages/io/src/index.ts";
 import { createModelsRegistry, createLlm } from "../../packages/llm/src/index.ts";
 import type { Sandbox } from "../../packages/sandbox/src/index.ts";
 import { createLogger, loadEnv } from "../../packages/shared/src/index.ts";
@@ -114,7 +114,7 @@ describe("agent runtime", () => {
 
         expect(out.sent.map(([, message]) => message)).toEqual([
             { kind: "status", status: "working" },
-            { kind: "text", text: "echo: hello" },
+            { kind: "text", text: "echo: hello", entry: expect.any(Number) },
             { kind: "status", status: "idle" },
         ]);
         expect(model.requests[0]?.messages[0]?.role).toBe("system");
@@ -132,7 +132,7 @@ describe("agent runtime", () => {
         await runtime.close();
 
         expect(out.sent.filter(([, message]) => message.kind === "text")).toEqual([
-            [chat, { kind: "text", text: "echo: again" }],
+            [chat, { kind: "text", text: "echo: again", entry: expect.any(Number) }],
         ]);
         const history = model.requests.at(-1)!.messages.map((message) => message.role);
         expect(history).toEqual(["system", "user", "assistant", "user"]);
@@ -218,5 +218,42 @@ describe("agent runtime", () => {
         expect(String(user?.content)).toContain("[sender: Ada Lovelace (@ada), user id: 42]");
 
         await runtime.close();
+    });
+
+    test("the feed pages history and streams new items and live state", async () => {
+        const out = recordingOutbox();
+        const runtime = await open(out.outbox);
+        const feed: Address = { service: "test", chat: "feed" };
+
+        await runtime.prompt(feed, "first", "feed-1");
+        await out.until((message) => message.kind === "status" && message.status === "idle");
+        const page = await runtime.history(feed);
+        expect(page.items.map((item) => item.kind)).toEqual(["user", "assistant"]);
+        expect(page.before).toBeUndefined();
+
+        const events: FeedEvent[] = [];
+        const newest = page.items.at(-1)!.id;
+        const stop = await runtime.subscribe(feed, newest, (event) => events.push(event));
+        while (events.length === 0) await Bun.sleep(5);
+        await runtime.prompt(feed, "second", "feed-2");
+        await out.until((message) => message.kind === "text" && message.text === "echo: second");
+        await Bun.sleep(50);
+        await stop();
+        await runtime.close();
+
+        const items = events.flatMap((event) => (event.kind === "items" ? event.items : []));
+        expect(items.map((item) => [item.kind, "text" in item ? item.text : ""])).toEqual([
+            ["user", "second"],
+            ["assistant", "echo: second"],
+        ]);
+        const lives = events.flatMap((event) => (event.kind === "live" ? [event.live.busy] : []));
+        expect(lives[0]).toBe(false);
+        expect(lives).toContain(true);
+        expect(lives.at(-1)).toBe(false);
+
+        // A one-item page reports where to continue.
+        const older = await (await open(recordingOutbox().outbox)).history(feed, { limit: 1 });
+        expect(older.items).toHaveLength(1);
+        expect(older.before).toBeNumber();
     });
 });

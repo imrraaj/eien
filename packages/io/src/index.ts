@@ -1,5 +1,6 @@
 export { addressKey, parseAddressKey } from "./address.ts";
 export { DeliveryFailed } from "./errors.ts";
+export type { ConversationFeed, FeedEvent, FeedItem, FeedPage, FeedToolCall, LiveState, LiveTool } from "./feed.ts";
 export { InputHub } from "./inputs.ts";
 export { OutputRouter } from "./outputs.ts";
 export { scrubDashes } from "./style.ts";

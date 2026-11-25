@@ -68,7 +68,12 @@ export interface Choice {
 
 /** What the agent says. `status` is a hint each service renders its own way, or ignores. */
 export type OutboundMessage =
-    | { readonly kind: "text"; readonly text: string }
+    | {
+          readonly kind: "text";
+          readonly text: string;
+          /** Transcript entry this answer came from; absent for notices such as a failed run. */
+          readonly entry?: number;
+      }
     | {
           readonly kind: "choices";
           readonly text: string;

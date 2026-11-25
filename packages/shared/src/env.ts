@@ -59,6 +59,29 @@ export const envSchema = z.object({
     TELEGRAM_BOT_TOKEN: optionalNonEmpty,
     ALLOWED_TELEGRAM_USER_IDS: telegramUserIds,
 
+    /** Enables the web app. Everyone with it is the same user; use a long random value. */
+    WEB_ACCESS_TOKEN: z.preprocess(
+        emptyToUndefined,
+        z
+            .string()
+            .trim()
+            .min(24, "must be at least 24 characters; generate one with `openssl rand -hex 24`")
+            .optional(),
+    ),
+    WEB_HOST: textWithDefault("127.0.0.1"),
+    /** Comma-separated public origins of the web app; required when a proxy rewrites the Host header. */
+    WEB_ORIGIN: z
+        .string()
+        .default("")
+        .transform((value) =>
+            value
+                .split(",")
+                .map((origin) => origin.trim().replace(/\/+$/, ""))
+                .filter(Boolean),
+        )
+        .pipe(z.array(z.url("must be an origin like https://eien.example.com"))),
+    WEB_PORT: intWithDefault(8787),
+
     SBX_NAME: textWithDefault("agent-1"),
     SBX_WORKDIR: textWithDefault("/work"),
     /** "docker" for a persistent Linux container, "sbx" for Docker Sandboxes on KVM hosts. */

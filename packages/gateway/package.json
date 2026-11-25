@@ -13,6 +13,7 @@
     "@eien/llm": "workspace:*",
     "@eien/sandbox": "workspace:*",
     "@eien/shared": "workspace:*",
-    "@eien/telegram": "workspace:*"
+    "@eien/telegram": "workspace:*",
+    "@eien/web": "workspace:*"
   }
 }

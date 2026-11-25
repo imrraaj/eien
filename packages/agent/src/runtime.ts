@@ -17,7 +17,9 @@ import {
     type Address,
     type Attachment,
     type Author,
+    type ConversationFeed,
     type DeliveryFailed,
+    type FeedItem,
     type OutboundMessage,
 } from "@eien/io";
 import { type createModelsRegistry } from "@eien/llm";
@@ -29,6 +31,7 @@ import { dirname, join } from "node:path";
 import type { WebOptions } from "./web.ts";
 import { Chats, Delivery } from "./chats.ts";
 import { answerText, callsTools } from "./entries.ts";
+import { toFeedItem, toLiveState } from "./feed.ts";
 import { MemoryStore, createMemoryTools } from "./memory.ts";
 import type { ScheduleInfo } from "./schedule-text.ts";
 import { Schedule, Schedules, removeSchedule, scheduleInfos, scheduleTool } from "./schedules.ts";
@@ -38,6 +41,7 @@ import { createWorkTools } from "./tools.ts";
 import { NoChat, exportFile, intake } from "./transfer.ts";
 
 const CHORD = BACKGROUND_CONTEXT;
+const HISTORY_PAGE = 50;
 
 /** Where the runtime sends what the agent says. `OutputRouter` from `@eien/io` is one. */
 export interface Outbox {
@@ -74,7 +78,7 @@ export interface PromptOptions {
 }
 
 /** The durable agent loop. It knows addresses, never the services behind them. */
-export interface AgentRuntime {
+export interface AgentRuntime extends ConversationFeed {
     /**
      * Start a run, or steer the running one. Attachments go into the sandbox first;
      * failing to store one is the only expected error. Resolves once the message is durably admitted.
@@ -206,7 +210,7 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
                 const text = answerText(entry);
                 if (!text) continue;
 
-                await send(to, { kind: "text", text });
+                await send(to, { kind: "text", text, entry: entry.id });
                 await conversation.commit(async (tx) => {
                     const doc = await tx.doc(Delivery, conversation.id);
                     doc.delivered = Math.max(doc.delivered, entry.id);
@@ -342,6 +346,52 @@ export async function createAgentRuntime(options: RuntimeOptions): Promise<Agent
         async cancelSchedule(chat, name) {
             const conversation = await conversationFor(chat, await memoryForPrompt());
             return conversation.commit((tx) => removeSchedule(tx, conversation.id, name), CHORD);
+        },
+
+        async history(from, { before, limit = HISTORY_PAGE } = {}) {
+            const conversation = await conversationFor(from, await memoryForPrompt());
+            const page = await conversation.entries(
+                { order: "descending", ...(before === undefined ? {} : { maxEntryId: (before - 1) as EntryId }) },
+                limit,
+                undefined,
+                CHORD,
+            );
+            const items = page.items.flatMap((entry) => toFeedItem(entry) ?? []).reverse();
+            const oldest = page.items.at(-1)?.id;
+            return { items, ...(page.next !== undefined && oldest !== undefined ? { before: oldest } : {}) };
+        },
+
+        async subscribe(from, after, listener) {
+            const conversation = await conversationFor(from, await memoryForPrompt());
+            const watch = await conversation.watch(CHORD, { from: (after + 1) as EntryId });
+            let newest = after;
+            let lastLive = "";
+
+            /** Emit items past `newest` and the live state when it changed; repeats of a view emit nothing. */
+            const emit = (view: typeof watch.value) => {
+                const items: FeedItem[] = [];
+                for (const entry of view.entries) {
+                    if (entry.id <= newest) continue;
+                    newest = entry.id;
+                    const item = toFeedItem(entry);
+                    if (item) items.push(item);
+                }
+                if (items.length > 0) listener({ kind: "items", items });
+
+                const live = toLiveState(view.docs["pi.live"] as Parameters<typeof toLiveState>[0]);
+                const serialized = JSON.stringify(live);
+                if (serialized !== lastLive) {
+                    lastLive = serialized;
+                    listener({ kind: "live", live });
+                }
+            };
+
+            // The watch reports changes only, so the current view goes out first.
+            emit(watch.value);
+            watch.start(async (call) => {
+                if (call.kind === "value") emit(call.value);
+            });
+            return async () => void (await watch.stop());
         },
 
         close: () => harness.close(CHORD),

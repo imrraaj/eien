@@ -6,14 +6,24 @@ import {
     loadSoul,
     operatingManual,
 } from "@eien/agent";
-import { InputHub, OutputRouter, type Address, type InboundEvent } from "@eien/io";
+import {
+    InputHub,
+    OutputRouter,
+    type Address,
+    type ConversationFeed,
+    type InboundEvent,
+    type InputService,
+    type OutputService,
+} from "@eien/io";
 import { createLlm, type ModelSelection } from "@eien/llm";
 import { createSandbox, type SandboxConfig } from "@eien/sandbox";
 import { createLogger, loadEnv, type Env } from "@eien/shared";
 import { createTelegramService } from "@eien/telegram";
+import { createWebService } from "@eien/web";
 import { join, resolve } from "node:path";
 
 const MAX_INPUT_CHARS = 8_000;
+const WEB_APP_DIR = new URL("../../../apps/web/dist", import.meta.url).pathname;
 
 const HELP = [
     "Send me a task; I work in the sandbox with bash, read, write, and edit.",
@@ -46,8 +56,10 @@ function sandboxConfig(env: Env): SandboxConfig {
 async function main(): Promise<void> {
     const env = loadEnv();
     const log = createLogger({ level: env.LOG_LEVEL, bindings: { service: "gateway" } });
-    if (!env.TELEGRAM_BOT_TOKEN) throw new Error("TELEGRAM_BOT_TOKEN is not set.");
-    if (env.ALLOWED_TELEGRAM_USER_IDS.length === 0) {
+    if (!env.TELEGRAM_BOT_TOKEN && !env.WEB_ACCESS_TOKEN) {
+        throw new Error("Nothing to serve: set TELEGRAM_BOT_TOKEN, WEB_ACCESS_TOKEN, or both.");
+    }
+    if (env.TELEGRAM_BOT_TOKEN && env.ALLOWED_TELEGRAM_USER_IDS.length === 0) {
         throw new Error("ALLOWED_TELEGRAM_USER_IDS is empty. Set your numeric Telegram user ID to lock the bot down.");
     }
 
@@ -58,14 +70,40 @@ async function main(): Promise<void> {
     const base =
         env.SYSTEM_PROMPT ?? `${await loadSoul(env.SOUL_PATH)}\n\n${operatingManual(sandbox.name, sandbox.root)}`;
 
+    // The web app reads the transcript through the runtime, which opens after services register.
+    let feed: ConversationFeed | undefined;
+    const lateFeed: ConversationFeed = {
+        history: (from, options) => feed!.history(from, options),
+        subscribe: (from, after, listener) => feed!.subscribe(from, after, listener),
+    };
+
     // Services register before the runtime opens, so reattached chats get their prompt hints.
+    const services: Array<InputService & OutputService> = [];
+    if (env.TELEGRAM_BOT_TOKEN) {
+        services.push(
+            createTelegramService({
+                token: env.TELEGRAM_BOT_TOKEN,
+                allowedUsers: new Set(env.ALLOWED_TELEGRAM_USER_IDS),
+                log,
+            }),
+        );
+    }
+    if (env.WEB_ACCESS_TOKEN) {
+        services.push(
+            createWebService({
+                token: env.WEB_ACCESS_TOKEN,
+                host: env.WEB_HOST,
+                port: env.WEB_PORT,
+                feed: lateFeed,
+                filesDir: `${env.STATE_DIR}/web-files`,
+                staticDir: WEB_APP_DIR,
+                origins: env.WEB_ORIGIN,
+                log,
+            }),
+        );
+    }
     const outputs = new OutputRouter();
-    const telegram = createTelegramService({
-        token: env.TELEGRAM_BOT_TOKEN,
-        allowedUsers: new Set(env.ALLOWED_TELEGRAM_USER_IDS),
-        log,
-    });
-    outputs.add(telegram);
+    for (const service of services) outputs.add(service);
 
     const runtime = await createAgentRuntime({
         storagePath,
@@ -79,6 +117,7 @@ async function main(): Promise<void> {
         instructions: (service, memoryText) => buildInstructions(base, outputs.promptHint(service), memoryText),
         log,
     });
+    feed = runtime;
 
     async function reply(to: Address, text: string): Promise<void> {
         const sent = await outputs.send(to, { kind: "text", text });
@@ -88,6 +127,10 @@ async function main(): Promise<void> {
     /** Render the model catalog as one-click buttons; the active model is starred. */
     async function offerModels(to: Address): Promise<void> {
         const active = llm.selection.ref;
+        if (to.service !== "telegram") {
+            const lines = llm.catalog.map((entry) => `${entry.ref === active ? "*" : " "} ${entry.ref}`);
+            return reply(to, ["Pick a model with /setmodel <ref>.", ...lines].join("\n"));
+        }
         const choices = llm.catalog.map((entry, index) => ({
             label: `${entry.ref === active ? "*" : "  "} ${entry.ref}`,
             data: `model:${index}`,
@@ -188,8 +231,9 @@ async function main(): Promise<void> {
     process.once("SIGINT", () => void shutdown("SIGINT"));
     process.once("SIGTERM", () => void shutdown("SIGTERM"));
 
-    await inputs.add(telegram);
+    for (const service of services) await inputs.add(service);
     log.info("gateway online", {
+        services: services.map((service) => service.name),
         model: llm.selection.ref,
         sandbox: `${sandbox.driver} (${sandbox.name})`,
         storage: storagePath,
