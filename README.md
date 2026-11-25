@@ -2,8 +2,10 @@
 
 A personal coding agent you talk to over Telegram (a web app is next). The agent
 loop runs on **pi-durable** with SQLite storage, so runs, schedules, and
-background workers survive restarts. Tools run inside a sandbox: `bash`, `read`,
-`write`, `edit`, `send_file`, `web_search`, `web_fetch`, `subagent`, `schedule`.
+background workers survive restarts. Tools run inside a small **Docker**
+sandbox: one long-lived Linux container, with each command executed through
+`docker exec`. No KVM or SSH server is required: `bash`, `read`, `write`,
+`edit`, `send_file`, `web_search`, `web_fetch`, `subagent`, `schedule`.
 
 ## Architecture
 
@@ -13,7 +15,7 @@ background workers survive restarts. Tools run inside a sandbox: `bash`, `read`,
  ...      ─┘   (@eien/io)  commands    (@eien/agent)   (@eien/io)  └─> ...
                                          │
                                          ├─ pi-durable + SQLite (state/eien.sqlite)
-                                         └─ sandbox (sbx microVM or ssh container)
+                                         └─ sandbox (Docker container, or sbx microVM)
 ```
 
 The agent loop knows only **addresses** (`{ service, chat }`), never the
@@ -44,11 +46,21 @@ await inputs.add(web);
 ## Quick start
 
 ```bash
-cp .env.example .env      # fill in LLM + Telegram values
+cp .env.example .env                 # shared: LLM + Telegram
+cp .env.docker.example .env.docker   # or .env.sbx.example
 bun install
-./sandbox/bootstrap.sh    # create the agent-1 sbx sandbox
-bun run bot
+./sandbox/bootstrap.sh               # build the image and create the container
+bun run bot:docker
 ```
+
+`bun run bot:docker` loads `.env` then `.env.docker`; `bun run bot:sbx` loads
+`.env` then `.env.sbx`. `bot:docker:dev` and `bot:sbx:dev` are the watch
+variants. `bun run bot` loads only `.env`.
+
+`bootstrap.sh` reads `.env.docker`; `bootstrap-sbx.sh` reads `.env.sbx`. The
+Docker bootstrap needs a running daemon and a user that can talk to it (the
+`docker` group). Add `INSTALL_BROWSER=0` to skip Chrome (about 1 GB). For a VPS,
+`./deploy/setup.sh` does this and installs a systemd service.
 
 Required in `.env`:
 
@@ -67,33 +79,51 @@ needed.
 
 ## Environment
 
-Validated by `packages/shared/src/env.ts`; empty values count as unset. `.env`
-is gitignored and `.env.example` holds placeholders only. Secrets stay in the
-gateway process, never in prompts, tool results, or the sandbox.
+Validated by `packages/shared/src/env.ts`; empty values count as unset. Secrets
+stay in the gateway process, never in prompts, tool results, or the sandbox.
 
-| Variable                     | Default               | Purpose                                            |
-| ---------------------------- | --------------------- | -------------------------------------------------- |
-| `STATE_DIR`                  | `state`               | holds `eien.sqlite`                                |
-| `MAX_AGENT_STEPS`            | `100`                 | model turns per run (hard cap 100)                 |
-| `SOUL_PATH`                  | bundled `SOUL.md`     | persona file                                       |
-| `SYSTEM_PROMPT`              | unset                 | replaces persona and operating manual entirely     |
-| `SANDBOX_DRIVER`             | `sbx`                 | `sbx` (host Docker Sandboxes) or `ssh` (container) |
-| `SBX_NAME`, `SBX_WORKDIR`    | `agent-1`, `/work`    | sandbox name and workspace                         |
-| `EXA_MCP_URL`, `EXA_API_KEY` | Exa hosted MCP, unset | web tools; the key only raises limits              |
-| `LOG_LEVEL`                  | `info`                | `debug`, `info`, `warn`, `error`                   |
+Three files, all gitignored:
+
+- `.env` is shared: LLM, Telegram, `STATE_DIR`, logging.
+- `.env.docker` is loaded after `.env` by `bun run bot:docker`, `sandbox/bootstrap.sh`, and the systemd deploy.
+- `.env.sbx` is loaded after `.env` by `bun run bot:sbx` and `sandbox/bootstrap-sbx.sh`.
+
+Tracked examples are `.env.example`, `.env.docker.example`, and
+`.env.sbx.example`. Shell environment variables win over all three files.
+
+| Variable                     | Default               | Purpose                                              |
+| ---------------------------- | --------------------- | ---------------------------------------------------- |
+| `STATE_DIR`                  | `state`               | holds `eien.sqlite`                                  |
+| `MAX_AGENT_STEPS`            | `100`                 | model turns per run (hard cap 100)                   |
+| `SOUL_PATH`                  | bundled `SOUL.md`     | persona file                                         |
+| `SYSTEM_PROMPT`              | unset                 | replaces persona and operating manual entirely       |
+| `SANDBOX_DRIVER`             | `docker`              | `docker` (no KVM) or `sbx` (Docker Sandboxes on KVM) |
+| `SANDBOX_DOCKER_IMAGE`       | `eien/sandbox:local`  | image built by `sandbox/bootstrap.sh`                |
+| `SANDBOX_DOCKER_NETWORK`     | `bridge`              | `bridge` or `none` for the sandbox network           |
+| `SBX_NAME`, `SBX_WORKDIR`    | `agent-1`, `/work`    | container name and workspace                         |
+| `EXA_MCP_URL`, `EXA_API_KEY` | Exa hosted MCP, unset | web tools; the key only raises limits                |
+| `LOG_LEVEL`                  | `info`                | `debug`, `info`, `warn`, `error`                     |
 
 ## Using it
 
 Commands: `/reset`, `/schedules`, `/unschedule <name>`, `/model`, `/status`,
 `/help`. Telegram also has `/id`, which shows chat and user IDs.
 
-**Users.** `ALLOWED_TELEGRAM_USER_IDS` takes numeric Telegram user IDs; anyone
-else is ignored. All users share one sandbox and `/work`. Each private chat has
-its own conversation, and a group shares one.
+**Users.** This is a single-user deployment: one bot token, one allowlist, one
+sandbox and one `/work`. Set `ALLOWED_TELEGRAM_USER_IDS` to just your numeric
+Telegram user ID; anyone else is ignored. Each private chat has its own
+conversation, and a group shares one.
 
-**Groups.** The bot answers when mentioned (`@yourbot ...`), when replied to,
-and for commands. Telegram's privacy mode already delivers those; disable it in
-BotFather (`/setprivacy`) if the bot should see every group message.
+**Groups.** The bot answers when named (`eien` or `eienbot` anywhere in the
+message), mentioned (`@yourbot ...`), replied to, and for commands. Names are
+matched as whole words, case-insensitively, and only the addressing occurrence
+is stripped. Telegram's privacy mode already delivers mentions and replies;
+disable it in BotFather (`/setprivacy`) if the bot should see every group
+message.
+
+**Feedback.** As soon as a message is accepted the bot replies with a
+"Thinking…" placeholder and edits that same message with the answer when the
+run finishes, so long runs don't look stalled.
 
 **Steering.** A message sent while a run is working steers it: the bot says it
 will fold it in, and pi-durable places the message after the current tool round.
@@ -109,8 +139,10 @@ off: none dropped, none repeated.
 
 **Files.** Photos, videos, audio, voice notes, and documents are saved to
 `/work/uploads` and referenced in the prompt. `send_file` sends a workspace file
-back. The sandbox has `ffmpeg`, ImageMagick, `pandoc`, poppler, `python3`, `git`,
-`curl`, and `jq`; more installs with `apt-get` or `pip`.
+back. The image has `ffmpeg`, ImageMagick, `pandoc`, poppler, `python3`, `git`,
+`curl`, `jq`, and `ripgrep`. Install Python packages with `pip install --user`
+and Node CLIs with `npm install -g` (it writes to `~/.npm-global`); the sandbox
+runs as an unprivileged user, so `apt-get` is not available.
 
 ## Persona
 
@@ -175,29 +207,59 @@ when it wakes, and a new schedule may reuse the name straight away.
 
 ## Sandbox
 
-```bash
-./sandbox/bootstrap.sh
-sbx exec agent-1 -- bash -lc 'pwd'
-```
+The default backend is **Docker**. `sandbox/Dockerfile` builds a small Debian
+image with the toolchain, Node 22, and optionally agent-browser with Chrome. The
+gateway starts one long-lived container (`SBX_NAME`, default `agent-1`) and runs
+each command as `docker exec -w /work <container> bash -lc ...`.
 
-Creates `agent-1`, applies the egress policy, makes `/work` writable, and
-installs the media tools plus agent-browser with Chrome (about 200 MB).
-Egress is open by default while testing (`SANDBOX_ALLOW_ALL=1`); run
-`SANDBOX_ALLOW_ALL=0 ./sandbox/policy.sh` for the curated allowlist.
-
-## Docker demo
-
-`docker-compose.bot.yml` runs the gateway plus a plain sandbox container reached
-over SSH (`SANDBOX_DRIVER=ssh`). It is a demonstration setup: the container has
-weaker isolation than an `sbx` microVM and open egress.
+The container is the persistent part. Files live in its writable layer and
+background processes, including agent-browser's Chrome and dev servers, keep
+running between tool calls. The container runs as the unprivileged `agent`
+user, with all capabilities dropped, `no-new-privileges`, and a 1 GB
+`/dev/shm`.
 
 ```bash
-./deploy/setup.sh       # generates SSH keys, builds, starts
-./deploy/down.sh        # stops; ./state and the sandbox volume are kept
+./sandbox/bootstrap.sh                    # reads .env.docker, builds, creates
+INSTALL_BROWSER=0 ./sandbox/bootstrap.sh  # smaller image, no Chrome
+RECREATE=1 ./sandbox/bootstrap.sh         # replace container (destroys /work)
+bun run bot:docker                        # loads .env + .env.docker
 ```
 
-Neither container gets the Docker socket. For a model server on the host, use
-`LLM_BASE_URL=http://host.docker.internal:9931/v1`.
+Network access is Docker's bridge by default (`SANDBOX_DOCKER_NETWORK=bridge`);
+set it to `none` to isolate the sandbox. There is no per-host allowlist like
+`sbx policy`; use a firewall or the `sbx` backend if you need that. `/work` is
+inside the container, not a host mount: stopping or restarting the gateway
+keeps it, but `RECREATE=1` or `docker rm` loses it.
+
+Docker shares the host kernel. It is a good fit for a single-user personal
+agent; do not expose it to hostile users. The gateway needs the Docker socket,
+which is root-equivalent on the host.
+
+On a host with KVM, the Docker Sandboxes backend is still available:
+
+```bash
+./sandbox/bootstrap-sbx.sh   # reads .env.sbx
+SANDBOX_ALLOW_ALL=0 ./sandbox/policy.sh
+bun run bot:sbx              # loads .env + .env.sbx
+```
+
+## VPS deployment
+
+`deploy/setup.sh` installs Docker if needed, builds the image and container,
+writes `/etc/systemd/system/eien.service`, and starts the gateway as the
+invoking user. The unit loads `.env`, then `.env.docker`, then
+`/var/lib/eien/runtime.env`. It gets Docker socket access through
+`SupplementaryGroups=docker`. It needs Debian/Ubuntu-style `apt`, `systemd`,
+Docker, and `bun`. No inbound ports are opened: Telegram uses long polling.
+
+```bash
+sudo ./deploy/setup.sh
+./deploy/down.sh        # stops the gateway; the sandbox container is kept
+journalctl -u eien -f
+```
+
+For a model server on the same VPS, `LLM_BASE_URL=http://127.0.0.1:9931/v1`
+works because the gateway runs on the host.
 
 ## Layout
 
@@ -207,11 +269,11 @@ packages/agent/       durable runtime, tools, schedules, subagents, SQLite adapt
 packages/telegram/    Telegram input + output service
 packages/gateway/     composition root and commands
 packages/llm/         pi-ai model registry for an OpenAI-compatible endpoint
-packages/sandbox/     sbx and ssh backends, file helpers, path confinement
+packages/sandbox/     docker and sbx backends, file helpers, path confinement
 packages/shared/      env schema, logger, formatting
 tests/                tests, one folder per package
-sandbox/              sbx bootstrap, egress policy, demo container image
-deploy/               Docker demo setup and teardown
+sandbox/              Docker sandbox image, sbx bootstrap and egress policy
+deploy/               systemd setup and teardown
 ```
 
 ## Errors and validation

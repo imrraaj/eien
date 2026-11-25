@@ -1,70 +1,77 @@
 #!/usr/bin/env bash
-# Create (or reuse) the always-on sandbox used by worker agents.
+# Build the small Linux image the agent runs in, then make sure its container
+# exists. No KVM and no SSH server: the gateway creates a persistent container
+# and runs `docker exec ... bash -lc` for each tool call.
 #
-# The sandbox has no host workspace bind mount: repos live under /work inside
-# the sandbox, one git worktree per worker. Credentials in here are limited to
-# scoped git deploy keys — never LLM or Google credentials.
+# Usage:
+#   ./sandbox/bootstrap.sh
+#   INSTALL_BROWSER=0 ./sandbox/bootstrap.sh   # skip Chrome (~1 GB)
+#   RECREATE=1 ./sandbox/bootstrap.sh          # rebuild and replace the container
 set -euo pipefail
 
-cd "$(dirname "$0")"
-SBX_NAME="${SBX_NAME:-agent-1}"
+cd "$(dirname "$0")/.."
 
-if sbx inspect "$SBX_NAME" >/dev/null 2>&1; then
-  echo "sandbox '$SBX_NAME' already exists"
-else
-  echo "creating sandbox '$SBX_NAME'"
-  sbx create --name "$SBX_NAME" shell
+# Backend settings live in .env.docker so the shell and the bot agree.
+if [[ -f .env.docker ]]; then
+  set -a
+  . ./.env.docker
+  set +a
 fi
 
-./policy.sh
+IMAGE="${SANDBOX_DOCKER_IMAGE:-eien/sandbox:local}"
+CONTAINER="${SBX_NAME:-agent-1}"
+INSTALL_BROWSER="${INSTALL_BROWSER:-1}"
 
-echo "configuring sandbox '$SBX_NAME'"
-sbx exec "$SBX_NAME" bash -lc '
-  set -euo pipefail
-  sudo mkdir -p /work
-  sudo chown "$(id -u):$(id -g)" /work
-  git config --global user.name "agent-bot"
-  git config --global user.email "agent-bot@localhost"
-  git config --global init.defaultBranch main
-  mkdir -p ~/.ssh && chmod 700 ~/.ssh
-  ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null || true
-  chmod 600 ~/.ssh/known_hosts 2>/dev/null || true
-  git --version
-'
+command -v docker >/dev/null 2>&1 || {
+  echo "error: docker is not installed." >&2
+  exit 1
+}
+if ! docker info >/dev/null 2>&1; then
+  echo "error: cannot talk to the Docker daemon as $(id -un)." >&2
+  echo "       Is Docker running? Is this user in the docker group?" >&2
+  exit 1
+fi
 
-echo "installing media/document tools in '$SBX_NAME'"
-sbx exec "$SBX_NAME" bash -lc '
-  set -euo pipefail
-  sudo apt-get update -qq
-  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-    ffmpeg imagemagick pandoc poppler-utils file
-  ffmpeg -version | head -1
-  pandoc --version | head -1
-  magick -version | head -1
-'
+echo "==> building $IMAGE"
+docker build --build-arg "INSTALL_BROWSER=$INSTALL_BROWSER" -t "$IMAGE" ./sandbox
 
-echo "installing agent-browser (headless Chrome for the agent) in '$SBX_NAME'"
-sbx exec "$SBX_NAME" bash -lc '
-  set -euo pipefail
-  command -v npm >/dev/null || {
-    sudo apt-get update -qq
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends nodejs npm
-  }
-  command -v agent-browser >/dev/null || sudo npm install -g agent-browser --silent
-  # Downloads Chrome for Testing plus its system libraries; a no-op when present.
-  agent-browser install --with-deps >/dev/null
-  agent-browser --version
-'
+if [[ "${RECREATE:-0}" == "1" ]]; then
+  echo "==> replacing container $CONTAINER"
+  docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+fi
+
+if docker inspect "$CONTAINER" >/dev/null 2>&1; then
+  echo "==> reusing container $CONTAINER"
+else
+  echo "==> creating container $CONTAINER"
+  docker run -d \
+    --name "$CONTAINER" \
+    --init \
+    --cap-drop ALL \
+    --security-opt no-new-privileges \
+    --shm-size 1g \
+    -w /work \
+    "$IMAGE" \
+    sleep infinity >/dev/null
+fi
+
+echo "==> checking the sandbox"
+docker exec "$CONTAINER" bash -lc 'id; pwd; command -v agent-browser || true'
 
 cat <<EOF
 
-Sandbox ready: $SBX_NAME
-Next steps (manual, once per repo):
-  1. Add a scoped deploy key inside the sandbox:
-       sbx exec $SBX_NAME -- bash -lc 'ssh-keygen -t ed25519 -C agent-bot -f ~/.ssh/id_<repo> -N ""'
-       sbx exec $SBX_NAME -- cat ~/.ssh/id_<repo>.pub
-     then register the public key as a deploy key with write access on the repo.
-  2. Add a Host alias in ~/.ssh/config inside the sandbox so each repo uses
-     its own key.
-  3. Verify: sbx exec $SBX_NAME -- git ls-remote git@github.com:<owner>/<repo>.git
+Sandbox ready.
+Add these to .env.docker (or let deploy/setup.sh write them for you):
+
+  SANDBOX_DRIVER=docker
+  SANDBOX_DOCKER_IMAGE=$IMAGE
+  SANDBOX_DOCKER_NETWORK=${SANDBOX_DOCKER_NETWORK:-bridge}
+  SBX_NAME=$CONTAINER
+  SBX_WORKDIR=/work
+
+Then start the gateway with: bun run bot:docker
+
+The container is named "$CONTAINER"; it survives gateway restarts. Rebuild
+with RECREATE=1 to replace its filesystem. Use SANDBOX_DOCKER_NETWORK=none
+for a sandbox with no network.
 EOF

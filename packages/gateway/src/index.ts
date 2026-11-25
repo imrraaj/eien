@@ -19,19 +19,18 @@ const HELP = [
 ].join("\n");
 
 function sandboxConfig(env: Env): SandboxConfig {
-    if (env.SANDBOX_DRIVER === "sbx") return { driver: "sbx", name: env.SBX_NAME, root: env.SBX_WORKDIR };
-    return {
-        driver: "ssh",
-        name: env.SBX_NAME,
-        root: env.SBX_WORKDIR,
-        ssh: {
-            host: env.SANDBOX_SSH_HOST,
-            user: env.SANDBOX_SSH_USER,
-            port: env.SANDBOX_SSH_PORT,
-            keyPath: env.SANDBOX_SSH_KEY,
-            knownHostsPath: env.SANDBOX_SSH_KNOWN_HOSTS,
-        },
-    };
+    if (env.SANDBOX_DRIVER === "docker") {
+        return {
+            driver: "docker",
+            name: env.SBX_NAME,
+            root: env.SBX_WORKDIR,
+            docker: {
+                image: env.SANDBOX_DOCKER_IMAGE,
+                network: env.SANDBOX_DOCKER_NETWORK,
+            },
+        };
+    }
+    return { driver: "sbx", name: env.SBX_NAME, root: env.SBX_WORKDIR };
 }
 
 async function main(): Promise<void> {
@@ -125,6 +124,7 @@ async function main(): Promise<void> {
         log.info("shutting down", { signal });
         await inputs.stopAll();
         await runtime.close();
+        await sandbox.close?.();
     };
     process.once("SIGINT", () => void shutdown("SIGINT"));
     process.once("SIGTERM", () => void shutdown("SIGTERM"));

@@ -54,13 +54,12 @@ export const envSchema = z.object({
 
     SBX_NAME: textWithDefault("agent-1"),
     SBX_WORKDIR: textWithDefault("/work"),
-    /** "sbx" for host Docker Sandboxes, "ssh" for a sandbox container. */
-    SANDBOX_DRIVER: z.enum(["sbx", "ssh"]).default("sbx"),
-    SANDBOX_SSH_HOST: textWithDefault("sandbox"),
-    SANDBOX_SSH_USER: textWithDefault("agent"),
-    SANDBOX_SSH_PORT: intWithDefault(22),
-    SANDBOX_SSH_KEY: textWithDefault("/keys/id_ed25519"),
-    SANDBOX_SSH_KNOWN_HOSTS: textWithDefault("/keys/known_hosts"),
+    /** "docker" for a persistent Linux container, "sbx" for Docker Sandboxes on KVM hosts. */
+    SANDBOX_DRIVER: z.enum(["docker", "sbx"]).default("docker"),
+    /** Image the Docker sandbox container runs; built by sandbox/bootstrap.sh. */
+    SANDBOX_DOCKER_IMAGE: textWithDefault("eien/sandbox:local"),
+    /** "bridge" keeps Docker networking; "none" isolates the sandbox. */
+    SANDBOX_DOCKER_NETWORK: z.enum(["bridge", "none"]).default("bridge"),
     MAX_AGENT_STEPS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).max(100).default(100)),
 
     EXA_MCP_URL: textWithDefault("https://mcp.exa.ai/mcp"),

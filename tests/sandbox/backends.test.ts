@@ -1,15 +1,52 @@
 import { describe, expect, test } from "bun:test";
+import {
+    dockerCopyInArgs,
+    dockerCopyOutArgs,
+    dockerExecArgs,
+    dockerRunArgs,
+} from "../../packages/sandbox/src/docker.ts";
 import { sbxExecArgs, sbxRemote } from "../../packages/sandbox/src/sbx.ts";
-import { scpArgs, sshArgs, sshCommand, sshRemote, sshScript } from "../../packages/sandbox/src/ssh.ts";
-import type { SshOptions } from "../../packages/sandbox/src/types.ts";
 
-const ssh: SshOptions = {
-    host: "sandbox",
-    user: "agent",
-    port: 2222,
-    keyPath: "/keys/id_ed25519",
-    knownHostsPath: "/keys/known_hosts",
-};
+describe("docker backend", () => {
+    test("exec runs a fresh bash in the existing container", () => {
+        const args = dockerExecArgs("agent-1", "pwd", "/work", 120, false);
+
+        expect(args.slice(0, 5)).toEqual(["exec", "-w", "/work", "agent-1", "timeout"]);
+        expect(args).not.toContain("-i");
+        expect(args.slice(-3)).toEqual(["bash", "-lc", "pwd"]);
+        expect(args).toContain("120s");
+    });
+
+    test("exec keeps stdin open only when a payload is provided", () => {
+        expect(dockerExecArgs("agent-1", "cat", "/work", 5, true)).toContain("-i");
+    });
+
+    test("run creates a hardened, persistent container", () => {
+        const args = dockerRunArgs("agent-1", "eien/sandbox:local", "/work", "bridge");
+
+        expect(args.slice(0, 2)).toEqual(["run", "-d"]);
+        expect(args).toContain("--name");
+        expect(args).toContain("agent-1");
+        expect(args).toContain("--init");
+        expect(args).toContain("--cap-drop");
+        expect(args).toContain("ALL");
+        expect(args).toContain("no-new-privileges");
+        expect(args).toContain("--shm-size");
+        expect(args.slice(-2)).toEqual(["sleep", "infinity"]);
+        expect(args).not.toContain("--network");
+    });
+
+    test("run can isolate the network", () => {
+        const args = dockerRunArgs("agent-1", "img", "/work", "none");
+        const index = args.indexOf("--network");
+        expect(args.slice(index, index + 2)).toEqual(["--network", "none"]);
+    });
+
+    test("copy goes through the container, in both directions", () => {
+        expect(dockerCopyInArgs("agent-1", "/tmp/a", "/work/a")).toEqual(["cp", "/tmp/a", "agent-1:/work/a"]);
+        expect(dockerCopyOutArgs("agent-1", "/work/a", "/tmp/a")).toEqual(["cp", "agent-1:/work/a", "/tmp/a"]);
+    });
+});
 
 describe("sbx backend", () => {
     test("exec enters the workspace with -w", () => {
@@ -22,37 +59,5 @@ describe("sbx backend", () => {
 
     test("remote paths use the sandbox prefix", () => {
         expect(sbxRemote("agent-1", "/work/a.txt")).toBe("agent-1:/work/a.txt");
-    });
-});
-
-describe("ssh backend", () => {
-    test("ssh options pin the key and host key", () => {
-        const args = sshArgs(ssh);
-        expect(args).toContain("-T");
-        expect(args).toContain("2222");
-        expect(args).toContain("/keys/id_ed25519");
-        expect(args).toContain("UserKnownHostsFile=/keys/known_hosts");
-        expect(args).toContain("BatchMode=yes");
-        expect(args).toContain("StrictHostKeyChecking=yes");
-    });
-
-    test("scp uses -P for the port", () => {
-        const args = scpArgs(ssh);
-        expect(args[0]).toBe("-q");
-        expect(args.slice(0, 2)).toEqual(["-q", "-P"]);
-        expect(args[2]).toBe("2222");
-    });
-
-    test("remote targets are user@host:path", () => {
-        expect(sshRemote(ssh, "/work/x")).toBe("agent@sandbox:/work/x");
-    });
-
-    test("script cds into the workspace and quotes it", () => {
-        expect(sshScript("ls", "/work")).toBe("cd -- '/work' && ls");
-        expect(sshScript("ls", "/wo'rk")).toBe("cd -- '/wo'\\''rk' && ls");
-    });
-
-    test("the bash -lc invocation is one quoted token", () => {
-        expect(sshCommand(sshScript("pwd; id", "/work"))).toBe("bash -lc 'cd -- '\\''/work'\\'' && pwd; id'");
     });
 });

@@ -32,11 +32,11 @@ export interface RemoteFileInfo {
 }
 
 /**
- * Where commands and files go. Implementations own the transport (sbx CLI,
- * ssh/scp, ...); callers never see it.
+ * Where commands and files go. Implementations own the transport (the Docker
+ * CLI, the sbx CLI, ...); callers never see it.
  */
 export interface Sandbox {
-    /** Backend identifier for logs and `/status`, e.g. "sbx" or "ssh". */
+    /** Backend identifier for logs and `/status`, e.g. "docker" or "sbx". */
     readonly driver: string;
     /** Sandbox or container name, for logs. */
     readonly name: string;
@@ -47,17 +47,17 @@ export interface Sandbox {
     copyIn(localPath: string, remotePath: string, options?: CopyOptions): Promise<Result<void, CommandFailed>>;
     /** Copy a sandbox file to the host. */
     copyOut(remotePath: string, localPath: string, options?: CopyOptions): Promise<Result<void, CommandFailed>>;
+    /** Release any long-lived process the backend keeps. */
+    close?(): Promise<void>;
 }
 
-export interface SshOptions {
-    host: string;
-    user: string;
-    port: number;
-    /** Private key readable by the gateway process. */
-    keyPath: string;
-    /** known_hosts file pinning the sandbox host key. */
-    knownHostsPath: string;
+export interface DockerOptions {
+    /** Image the sandbox container runs. */
+    image: string;
+    /** "bridge" keeps Docker networking; "none" isolates the container. */
+    network: "bridge" | "none";
 }
 
 export type SandboxConfig =
-    { driver: "sbx"; name: string; root: string } | { driver: "ssh"; name: string; root: string; ssh: SshOptions };
+    | { driver: "sbx"; name: string; root: string }
+    | { driver: "docker"; name: string; root: string; docker: DockerOptions };
