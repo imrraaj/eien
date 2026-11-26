@@ -16,6 +16,18 @@
         "noUnusedParameters": true,
         "skipLibCheck": true,
         "resolveJsonModule": true,
+        "baseUrl": ".",
+        "paths": {
+            "@eien/agent": ["./packages/agent/src/index.ts"],
+            "@eien/gateway": ["./packages/gateway/src/index.ts"],
+            "@eien/io": ["./packages/io/src/index.ts"],
+            "@eien/llm": ["./packages/llm/src/index.ts"],
+            "@eien/sandbox": ["./packages/sandbox/src/index.ts"],
+            "@eien/shared": ["./packages/shared/src/index.ts"],
+            "@eien/telegram": ["./packages/telegram/src/index.ts"],
+            "@eien/web": ["./packages/web/src/index.ts"],
+            "@eien/web/protocol": ["./packages/web/src/protocol.ts"]
+        },
         "types": ["bun"]
     }
 }

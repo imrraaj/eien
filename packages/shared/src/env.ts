@@ -53,7 +53,7 @@ export const envSchema = z.object({
     /** Where `/setmodel` remembers the active model; defaults to `<STATE_DIR>/model.json`. */
     MODEL_SELECTION_PATH: optionalNonEmpty,
     SYSTEM_PROMPT: optionalNonEmpty,
-    /** Persona file; defaults to the SOUL.md shipped with @eien/agent. */
+    /** Persona file; defaults to the repo's prompts/SOUL.md. */
     SOUL_PATH: optionalNonEmpty,
 
     TELEGRAM_BOT_TOKEN: optionalNonEmpty,

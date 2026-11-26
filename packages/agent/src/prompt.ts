@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 
-/** The persona shipped with the package; `SOUL_PATH` points somewhere else. */
-export const DEFAULT_SOUL_PATH = new URL("../SOUL.md", import.meta.url).pathname;
+/** The persona shipped with the repo; `SOUL_PATH` points somewhere else. */
+export const DEFAULT_SOUL_PATH = new URL("../../../prompts/SOUL.md", import.meta.url).pathname;
 
 /** Read the persona file. An empty file means no persona section. */
 export async function loadSoul(path: string = DEFAULT_SOUL_PATH): Promise<string> {
