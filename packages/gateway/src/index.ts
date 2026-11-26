@@ -72,9 +72,13 @@ async function main(): Promise<void> {
 
     // The web app reads the transcript through the runtime, which opens after services register.
     let feed: ConversationFeed | undefined;
+    const readyFeed = (): ConversationFeed => {
+        if (!feed) throw new Error("the conversation feed was used before the runtime opened");
+        return feed;
+    };
     const lateFeed: ConversationFeed = {
-        history: (from, options) => feed!.history(from, options),
-        subscribe: (from, after, listener) => feed!.subscribe(from, after, listener),
+        history: (from, options) => readyFeed().history(from, options),
+        subscribe: (from, after, listener) => readyFeed().subscribe(from, after, listener),
     };
 
     // Services register before the runtime opens, so reattached chats get their prompt hints.

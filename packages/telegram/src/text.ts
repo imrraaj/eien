@@ -1,5 +1,3 @@
-/** Telegram's hard limit is 4096 UTF-8 characters; stay under it. */
-export const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 const DEFAULT_LIMIT = 4000;
 
 function isHighSurrogate(code: number): boolean {

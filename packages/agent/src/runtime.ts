@@ -23,10 +23,9 @@ import {
     type OutboundMessage,
 } from "@eien/io";
 import { type createModelsRegistry } from "@eien/llm";
-import type { Sandbox } from "@eien/sandbox";
+import type { CommandFailed, Sandbox } from "@eien/sandbox";
 import type { Logger } from "@eien/shared";
 import { Result } from "better-result";
-import type { CommandFailed } from "@eien/sandbox";
 import { dirname, join } from "node:path";
 import type { WebOptions } from "./web.ts";
 import { Chats, Delivery } from "./chats.ts";

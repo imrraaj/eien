@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Create (or reuse) the always-on sandbox used by worker agents.
+# Create (or reuse) the always-on sandbox the agent works in.
 #
 # The sandbox has no host workspace bind mount: repos live under /work inside
-# the sandbox, one git worktree per worker. Credentials in here are limited to
-# scoped git deploy keys — never LLM or Google credentials.
+# the sandbox. Credentials in here are limited to scoped git deploy keys —
+# never LLM or other service credentials.
 #
 # This is the Docker Sandboxes (sbx) backend. It needs KVM on the host. For a
 # VPS without KVM use ./sandbox/bootstrap.sh (Docker) instead.

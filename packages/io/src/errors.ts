@@ -7,7 +7,7 @@ import { TaggedError } from "better-result";
  */
 export class DeliveryFailed extends TaggedError("DeliveryFailed")<{
     service: string;
-    reason: "too_large" | "unsupported" | "failed" | "no_service";
+    reason: "too_large" | "failed" | "no_service";
     message: string;
     cause?: unknown;
 }> {}

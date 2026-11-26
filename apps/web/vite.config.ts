@@ -18,6 +18,7 @@ export default defineConfig({
             { find: /^@eien\/io$/, replacement: eien("io/src/index.ts") },
             { find: /^@eien\/llm$/, replacement: eien("llm/src/index.ts") },
             { find: /^@eien\/sandbox$/, replacement: eien("sandbox/src/index.ts") },
+            { find: /^@eien\/shared\/format$/, replacement: eien("shared/src/format.ts") },
             { find: /^@eien\/shared$/, replacement: eien("shared/src/index.ts") },
             { find: /^@eien\/telegram$/, replacement: eien("telegram/src/index.ts") },
             { find: /^@eien\/web$/, replacement: eien("web/src/index.ts") },

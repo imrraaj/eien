@@ -1,10 +1,4 @@
-/**
- * Minimal structured (JSON-lines) logger for host-side code: gateway,
- * activities, worker bootstrap.
- *
- * Not for Temporal workflow code — workflows must be deterministic and should
- * use `workflow` logging (or return data) instead.
- */
+/** Minimal structured (JSON-lines) logger for host-side code. */
 
 export const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
 export type LogLevel = (typeof LOG_LEVELS)[number];

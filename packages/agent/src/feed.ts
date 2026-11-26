@@ -14,10 +14,7 @@ function clip(text: string, limit = MAX_TOOL_TEXT): string {
 function messageText(message: Message | undefined): string {
     if (!message) return "";
     if (typeof message.content === "string") return message.content;
-    return message.content
-        .flatMap((block) => (block.type === "text" ? [block.text] : []))
-        .join("")
-        .trim();
+    return answerText({ model: [message] });
 }
 
 /** The feed item for a transcript entry, or `undefined` for bookkeeping entries a reader does not need. */

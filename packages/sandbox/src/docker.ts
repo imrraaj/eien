@@ -73,8 +73,7 @@ export function dockerCopyOutArgs(name: string, remotePath: string, localPath: s
 /**
  * Sandbox backed by a long-lived Docker container. The container keeps the
  * filesystem and background processes alive; every command is a fresh
- * `docker exec ... bash -lc`, the same model Hermes uses for its Docker
- * backend.
+ * `docker exec ... bash -lc`.
  */
 export class DockerSandbox implements Sandbox {
     readonly driver = "docker";
@@ -160,7 +159,6 @@ export class DockerSandbox implements Sandbox {
                 timeoutMs: timeoutSec * 1_000 + EXEC_GRACE_MS,
                 signal: options.signal,
                 stdin: options.stdin,
-                maxOutputBytes: options.maxOutputBytes,
             },
         );
 

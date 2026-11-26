@@ -117,7 +117,7 @@ Tracked examples are `.env.example`, `.env.docker.example`, and
 | `MEMORY_PATH`                | `$STATE_DIR/memory.md` | control-plane memory file                              |
 | `MEMORY_MAX_BYTES`           | `65536`                | memory file cap                                        |
 | `MAX_AGENT_STEPS`            | `100`                  | model turns per run (hard cap 100)                     |
-| `SOUL_PATH`                  | bundled `SOUL.md`      | persona file                                           |
+| `SOUL_PATH`                  | `prompts/SOUL.md`      | persona file                                           |
 | `SYSTEM_PROMPT`              | unset                  | replaces persona and operating manual entirely         |
 | `SANDBOX_DRIVER`             | `docker`               | `docker` (no KVM) or `sbx` (Docker Sandboxes on KVM)   |
 | `SANDBOX_DOCKER_IMAGE`       | `eien/sandbox:local`   | image built by `sandbox/bootstrap.sh`                  |
@@ -211,7 +211,7 @@ the public URL, or sign-in fails with "the server refused this address".
 
 ## Persona
 
-`packages/agent/SOUL.md` is the only source of the bot's character: voice,
+`prompts/SOUL.md` is the only source of the bot's character: voice,
 length, how it handles disagreement and uncertainty. It is kept apart from the
 operating manual (tools, sandbox, memory, scheduling) in
 `packages/agent/src/prompt.ts`, and from the runtime memory file. Point
@@ -352,7 +352,8 @@ works because the gateway runs on the host.
 
 ```
 packages/io/          input/output contracts, InputHub, OutputRouter
-packages/agent/       durable runtime, tools, schedules, subagents, SQLite adapter, SOUL.md
+prompts/              persona and system-prompt source files (SOUL.md)
+packages/agent/       durable runtime, tools, schedules, subagents, SQLite adapter
 packages/telegram/    Telegram input + output service
 packages/web/         web input + output service: HTTP API, WebSocket feed, token auth
 apps/web/             React web app (Vite), served by packages/web

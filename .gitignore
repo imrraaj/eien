@@ -30,7 +30,6 @@ coverage/
 .idea/
 .vscode/
 
-# runtime state
 state/
 deploy/compose.env
 deploy/keys/

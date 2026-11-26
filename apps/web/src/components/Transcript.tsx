@@ -1,16 +1,10 @@
+import { formatBytes } from "@eien/shared/format";
 import type { FeedItem } from "@eien/web/protocol";
 import { Fragment, useMemo } from "react";
 import { fileUrl } from "../api.ts";
 import type { Row } from "../conversation.ts";
 import { Markdown } from "./Markdown.tsx";
 import { ToolCall, type ToolResult } from "./ToolCall.tsx";
-
-const formatBytes = (bytes: number) =>
-    bytes < 1024
-        ? `${bytes} B`
-        : bytes < 1024 ** 2
-          ? `${(bytes / 1024).toFixed(1)} KB`
-          : `${(bytes / 1024 ** 2).toFixed(1)} MB`;
 
 /** Agent notes about attachments are shown as chips, not as text. */
 function splitAttachments(text: string): { body: string; files: string[] } {

@@ -1,7 +1,5 @@
+import { MAX_FILES_PER_MESSAGE, MAX_UPLOAD_BYTES } from "@eien/web/protocol";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-
-const MAX_FILES = 10;
-const MAX_FILE_BYTES = 25 * 1024 * 1024;
 
 export function Composer({ onSend, busy }: { onSend: (text: string, files: File[]) => Promise<void>; busy: boolean }) {
     const [text, setText] = useState("");
@@ -21,12 +19,17 @@ export function Composer({ onSend, busy }: { onSend: (text: string, files: File[
 
     const add = (incoming: Iterable<File>) => {
         const next = [...files, ...incoming];
-        const tooBig = next.find((file) => file.size > MAX_FILE_BYTES);
-        if (tooBig) return setError(`${tooBig.name} is over 25 MB`);
-        if (next.length > MAX_FILES) return setError(`at most ${MAX_FILES} files per message`);
+        const tooBig = next.find((file) => file.size > MAX_UPLOAD_BYTES);
+        if (tooBig) return setError(`${tooBig.name} is over ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB`);
+        if (next.length > MAX_FILES_PER_MESSAGE) {
+            return setError(`at most ${MAX_FILES_PER_MESSAGE} files per message`);
+        }
         setError(undefined);
         setFiles(next);
     };
+    // The window listeners below register once and always call the latest `add`.
+    const addRef = useRef(add);
+    addRef.current = add;
 
     // Files dropped anywhere on the page attach to the next message.
     useEffect(() => {
@@ -41,7 +44,7 @@ export function Composer({ onSend, busy }: { onSend: (text: string, files: File[
         const drop = (event: DragEvent) => {
             event.preventDefault();
             setDragging(false);
-            if (event.dataTransfer?.files.length) add(event.dataTransfer.files);
+            if (event.dataTransfer?.files.length) addRef.current(event.dataTransfer.files);
         };
         window.addEventListener("dragover", over);
         window.addEventListener("dragleave", leave);
@@ -51,7 +54,7 @@ export function Composer({ onSend, busy }: { onSend: (text: string, files: File[
             window.removeEventListener("dragleave", leave);
             window.removeEventListener("drop", drop);
         };
-    });
+    }, []);
 
     const submit = async () => {
         const message = text.trim();

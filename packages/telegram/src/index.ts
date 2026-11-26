@@ -9,7 +9,7 @@ import {
     type OutputService,
 } from "@eien/io";
 import { Result } from "better-result";
-import { formatBytes, type Logger } from "@eien/shared";
+import { errorText, formatBytes, type Logger } from "@eien/shared";
 import { Bot, InputFile, type Api, type Context } from "grammy";
 import { createReadStream } from "node:fs";
 import { downloadAttachment } from "./attachments.ts";
@@ -50,10 +50,6 @@ export interface TelegramOptions {
 
 /** Telegram over long polling: an input and an output service in one. */
 export type TelegramService = InputService & OutputService;
-
-function errorText(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
-}
 
 async function sendChunks(api: Api, chat: string, text: string, replyTo: number | undefined): Promise<void> {
     let quote = replyTo;

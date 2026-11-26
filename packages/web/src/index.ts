@@ -17,15 +17,13 @@ import { tmpdir } from "node:os";
 import { join, normalize } from "node:path";
 import { authenticated, loginCookie, logoutCookie, sameOrigin, tokenMatches } from "./auth.ts";
 import { FileStore } from "./files.ts";
-import type { ServerMessage } from "./protocol.ts";
+import { MAX_FILES_PER_MESSAGE, MAX_UPLOAD_BYTES, type ServerMessage } from "./protocol.ts";
 
 export type { ServerMessage } from "./protocol.ts";
 
 /** The one identity a shared access token stands for. */
-export const WEB_ADDRESS: Address = { service: "web", chat: "main" };
+const WEB_ADDRESS: Address = { service: "web", chat: "main" };
 
-const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
-const MAX_FILES_PER_MESSAGE = 10;
 const MAX_SEND_BYTES = 100 * 1024 * 1024;
 const FAILED_LOGIN_DELAY_MS = 750;
 

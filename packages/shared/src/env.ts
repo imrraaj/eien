@@ -29,7 +29,6 @@ const telegramUserIds = z
  * startup (e.g. the gateway requires the Telegram token and an LLM key).
  */
 export const envSchema = z.object({
-    NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
     LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
     STATE_DIR: textWithDefault("state"),
     /** Control-plane memory file; defaults to STATE_DIR/memory.md. */
@@ -41,7 +40,6 @@ export const envSchema = z.object({
     LLM_BASE_URL: optionalNonEmpty,
     LLM_API_KEY: optionalNonEmpty,
     LLM_MODEL: optionalNonEmpty,
-    LLM_TIMEOUT_MS: intWithDefault(120_000),
     LLM_CONTEXT_WINDOW: intWithDefault(128_000),
     LLM_MAX_TOKENS: intWithDefault(8_192),
     OPENROUTER_API_KEY: optionalNonEmpty,

@@ -17,8 +17,6 @@ export class EditFailed extends TaggedError("EditFailed")<{
     message: string;
 }> {}
 
-export type SandboxError = InvalidPath | CommandFailed | EditFailed;
-
 /** `CommandFailed` from a non-zero exit, using the command's output as the message when it has one. */
 export function commandFailed(exitCode: number, output: string, fallback: string): CommandFailed {
     return new CommandFailed({ exitCode, output, message: output.trim() || `${fallback} (exit ${exitCode})` });

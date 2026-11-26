@@ -50,6 +50,7 @@ else
     --cap-drop ALL \
     --security-opt no-new-privileges \
     --shm-size 1g \
+    --network "${SANDBOX_DOCKER_NETWORK:-bridge}" \
     -w /work \
     "$IMAGE" \
     sleep infinity >/dev/null

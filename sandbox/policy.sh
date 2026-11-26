@@ -2,8 +2,8 @@
 # Sandbox network allowlist. Rules are scoped to one sandbox, so the sandbox
 # cannot widen another sandbox's egress (and vice versa).
 #
-# Git + package registries + runtime download hosts only. No LLM keys, no
-# Google credentials, no Temporal access from inside the sandbox.
+# Git + package registries + runtime download hosts only. No LLM keys or
+# credentials inside the sandbox.
 set -euo pipefail
 
 SBX_NAME="${SBX_NAME:-agent-1}"

@@ -1,5 +1,6 @@
 import { defineTool } from "@earendil-works/pi-durable";
 import { obj, oneOf, opt, str } from "@earendil-works/pi-schema";
+import { errorText } from "@eien/shared";
 import { Result, TaggedError } from "better-result";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -28,10 +29,6 @@ export class MemoryEditRefused extends TaggedError("MemoryEditRefused")<{
     reason: "empty" | "not_found" | "ambiguous";
     message: string;
 }> {}
-
-function errorText(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
-}
 
 function appendContent(current: string, content: string): string {
     if (current.length === 0) return content;
@@ -94,14 +91,25 @@ export class MemoryStore {
         });
     }
 
+    #writeFailed = (error: unknown): MemoryWriteFailed =>
+        new MemoryWriteFailed({ path: this.path, message: errorText(error) });
+
+    /** The current contents, for a read that precedes a write. */
+    #load(): Promise<Result<string, MemoryWriteFailed>> {
+        return Result.tryPromise({ try: () => this.#read(), catch: this.#writeFailed });
+    }
+
+    #save(content: string): Promise<Result<void, MemoryWriteFailed>> {
+        return Result.tryPromise({ try: () => this.#writeAtomic(content), catch: this.#writeFailed });
+    }
+
     /** Read the whole memory file. A missing file is an empty memory. */
     read(): Promise<Result<string, MemoryReadFailed>> {
         return this.#serial(async () => {
-            try {
-                return Result.ok(await this.#read());
-            } catch (error) {
-                return Result.err(new MemoryReadFailed({ path: this.path, message: errorText(error) }));
-            }
+            return Result.tryPromise({
+                try: () => this.#read(),
+                catch: (error) => new MemoryReadFailed({ path: this.path, message: errorText(error) }),
+            });
         });
     }
 
@@ -111,22 +119,16 @@ export class MemoryStore {
         mode: "append" | "replace" = "append",
     ): Promise<Result<string, MemoryFull | MemoryWriteFailed>> {
         return this.#serial(async () => {
-            let current: string;
-            try {
-                current = await this.#read();
-            } catch (error) {
-                return Result.err(new MemoryWriteFailed({ path: this.path, message: errorText(error) }));
-            }
+            const loaded = await this.#load();
+            if (loaded.isErr()) return loaded;
+            const current = loaded.value;
 
             const next = mode === "replace" ? content : appendContent(current, content);
             const tooLarge = this.#tooLarge(next);
             if (tooLarge) return Result.err(tooLarge);
 
-            try {
-                await this.#writeAtomic(next);
-            } catch (error) {
-                return Result.err(new MemoryWriteFailed({ path: this.path, message: errorText(error) }));
-            }
+            const saved = await this.#save(next);
+            if (saved.isErr()) return saved;
             return Result.ok(
                 `memory saved: ${Buffer.byteLength(content)} bytes written, ${Buffer.byteLength(next)}/${this.limit} bytes used`,
             );
@@ -149,12 +151,9 @@ export class MemoryStore {
                 );
             }
 
-            let current: string;
-            try {
-                current = await this.#read();
-            } catch (error) {
-                return Result.err(new MemoryWriteFailed({ path: this.path, message: errorText(error) }));
-            }
+            const loaded = await this.#load();
+            if (loaded.isErr()) return loaded;
+            const current = loaded.value;
 
             const occurrences = current.split(oldText).length - 1;
             if (occurrences === 0) {
@@ -182,11 +181,8 @@ export class MemoryStore {
             const tooLarge = this.#tooLarge(next);
             if (tooLarge) return Result.err(tooLarge);
 
-            try {
-                await this.#writeAtomic(next);
-            } catch (error) {
-                return Result.err(new MemoryWriteFailed({ path: this.path, message: errorText(error) }));
-            }
+            const saved = await this.#save(next);
+            if (saved.isErr()) return saved;
             return Result.ok(`memory updated at ${this.path}:${line}`);
         });
     }

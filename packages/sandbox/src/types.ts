@@ -9,8 +9,6 @@ export interface ExecOptions {
     timeoutMs?: number;
     signal?: AbortSignal;
     stdin?: string;
-    /** Cap on captured output before middle-truncation. */
-    maxOutputBytes?: number;
 }
 
 export interface ExecResult {

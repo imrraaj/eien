@@ -9,6 +9,10 @@ export interface StoredFile {
     readonly at: number;
 }
 
+/** Files per message and per-file size the web app accepts; shared by client and server. */
+export const MAX_FILES_PER_MESSAGE = 10;
+export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
 /** Messages the server pushes over `/api/events`. The React app imports these types. */
 export type ServerMessage =
     | { readonly type: "feed"; readonly event: FeedEvent }

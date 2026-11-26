@@ -1,4 +1,4 @@
-import type { Env } from "@eien/shared";
+import { errorText, type Env } from "@eien/shared";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
@@ -83,12 +83,12 @@ function readJson(path: string): unknown {
         raw = readFileSync(path, "utf8");
     } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-        throw new Error(`Could not read ${path}: ${(error as Error).message}`);
+        throw new Error(`Could not read ${path}: ${errorText(error)}`);
     }
     try {
         return JSON.parse(raw);
     } catch (error) {
-        throw new Error(`${path} is not valid JSON: ${(error as Error).message}`);
+        throw new Error(`${path} is not valid JSON: ${errorText(error)}`);
     }
 }
 
